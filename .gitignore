@@ -1,0 +1,10 @@
+# The built binary and release archives
+/mediakeeper
+/mediakeeper.exe
+/dist/
+
+# Sample media for experiments
+/media/
+
+# Undo journals of runs inside the working tree
+.mediakeeper/

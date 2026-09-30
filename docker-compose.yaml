@@ -1,0 +1,46 @@
+# MediaKeeper as a DLNA media server.
+#
+#   docker compose up -d                 start the server
+#   docker compose logs -f               see what is being played
+#
+# Organizing the library (renaming, .nfo, posters) is interactive, so it is
+# run by hand in a one-off container, which shares the volumes and settings
+# of the service below:
+#
+#   docker compose run --rm mediakeeper -setup              enter API keys once
+#   docker compose run --rm mediakeeper -dry-run /media     show the plan
+#   docker compose run --rm mediakeeper /media              organize
+#   docker compose run --rm mediakeeper -undo /media        revert the last run
+
+services:
+  mediakeeper:
+    image: ghcr.io/OWNER/mediakeeper:latest # replace OWNER with the GitHub account
+    # build: .                              # or build from the sources here
+    container_name: mediakeeper
+    restart: unless-stopped
+
+    # Players find a DLNA server by multicast, which does not pass through
+    # Docker's bridge network: the container has to share the host's network.
+    # (Works on Linux; Docker Desktop on macOS/Windows cannot do this.)
+    network_mode: host
+
+    # Files created in the library belong to this user instead of root.
+    # Use the owner of the media folder: id -u / id -g.
+    user: "1000:1000"
+
+    environment:
+      TZ: Europe/Moscow
+      # Keys can be given here instead of "mediakeeper -setup":
+      # TMDB_API_KEY: ""
+      # OMDB_API_KEY: ""
+      # KINOPOISK_API_KEY: ""
+
+    volumes:
+      - ./media:/media # the library: Movies/ and Shows/ are created inside
+      - ./config:/config # settings; the folder must be writable by the user above
+
+    command: ["-serve", "-port", "8200", "-name", "MediaKeeper", "/media"]
+
+    # Needed by "docker compose run" for the interactive dialogs.
+    stdin_open: true
+    tty: true
