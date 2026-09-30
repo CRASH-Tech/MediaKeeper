@@ -111,8 +111,13 @@ Good to know:
   folder the files were found in, whichever parent folder you scan. A title
   that already has its own folder is moved as a whole, with everything in it.
   `-out DIR` gathers the library in one place instead.
-- **Runs are repeatable.** A second run recognizes organized titles by their
-  `.nfo` and changes nothing.
+- **Described files are left alone.** A video that already has an `.nfo` —
+  written by MediaKeeper, Jellyfin, Kodi or by hand, named like the video or
+  `movie.nfo` in its folder — is not renamed, looked up or tagged, so a second
+  run changes nothing and only new files are organized. A new episode of a
+  described series is filed next to the others without rewriting the
+  series' `tvshow.nfo`. A release's text "nfo" (ASCII art) does not count.
+  `-refresh` redoes everything, identifying from scratch.
 - **Search is forgiving.** Release junk in names is ignored, transliterated
   titles (`Myatezh`) are also tried in Cyrillic, long localized titles are
   searched by their parts, and a single file is looked up among series too
@@ -358,7 +363,7 @@ mediakeeper [options] [directory]        (directory: the current one by default)
 | `-undo`         | Revert the last run in this directory; repeat to go further back        |
 | `-out DIR`      | Build the library in `DIR` instead of where the files are               |
 | `-no-tags`      | Do not write tags into the files                                        |
-| `-refresh`      | Identify again even if an `.nfo` is already there                       |
+| `-refresh`      | Also redo videos that already have an `.nfo`, identifying them from scratch |
 | `-sources LIST` | Comma-separated sources in priority order                               |
 | `-lang CODE`    | Language of TMDB titles and descriptions, e.g. `ru-RU` (default `en-US`) |
 | `-setup`        | Enter API keys and exit                                                 |

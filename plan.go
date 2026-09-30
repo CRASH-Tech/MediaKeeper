@@ -210,7 +210,12 @@ func (a *App) AddShow(p *Plan, u *Unit, s *Show) error {
 	showDir := filepath.Join(a.category(base, showsFolder), withYear(s.Title, s.Year))
 	files := p.relocate(own, showDir, u.Files)
 
-	root := &Item{Docs: []Doc{{filepath.Join(showDir, "tvshow.nfo"), ShowNFO(s)}}}
+	root := &Item{}
+	// A new episode of a series that is already described does not rewrite
+	// the series' description.
+	if tvshow := filepath.Join(showDir, "tvshow.nfo"); !a.keepDescribed || !exists(tvshow) {
+		root.Docs = []Doc{{tvshow, ShowNFO(s)}}
+	}
 	root.addImage(s.Poster, filepath.Join(showDir, "poster.jpg"))
 	root.addImage(s.Backdrop, filepath.Join(showDir, "backdrop.jpg"))
 	p.add(root)

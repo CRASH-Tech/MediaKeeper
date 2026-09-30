@@ -522,7 +522,7 @@ func TestRunRerunUndo(t *testing.T) {
 
 	// A second run recognizes everything by .nfo and changes nothing.
 	out = mustRun(t, "", "-yes", root)
-	wantAll(t, "second run", out, "Renames: 0")
+	wantAll(t, "second run", out, "Left alone: 5 file(s) that already have an .nfo", "Nothing to do")
 	if again := tree(t, root); !reflect.DeepEqual(again, after) {
 		t.Errorf("second run changed the tree:\n  %s", strings.Join(again, "\n  "))
 	}
@@ -663,7 +663,8 @@ func TestKeylessSources(t *testing.T) {
 	lookups := wikidataTitleLookups
 
 	// The second run finds the sources by the marker in .nfo.
-	wantAll(t, "second run", mustRun(t, "", "-yes", root), "Renames: 0")
+	// -refresh looks everything up again, from the sources recorded in .nfo.
+	wantAll(t, "second run", mustRun(t, "", "-yes", "-refresh", root), "Renames: 0")
 	if wikidataTitleLookups != lookups {
 		t.Errorf("a title known to be missing was looked up again")
 	}
@@ -749,7 +750,7 @@ func TestSmarterSearch(t *testing.T) {
 	wantAll(t, "nfo", string(nfo), `source="imdb" id="tt0144039" kind="tv"`, "<movie>")
 
 	// The series stored as a movie is recognized again without questions.
-	wantAll(t, "second run", mustRun(t, "", "-yes", root), "Renames: 0", "Atomic Train (1999) [IMDb]")
+	wantAll(t, "second run", mustRun(t, "", "-yes", root), "nothing to do")
 }
 
 // Scanning a parent directory must not pull titles out of their folders.
@@ -787,7 +788,7 @@ func TestTitlesStayInTheirFolders(t *testing.T) {
 	// Running on any of the folders afterwards finds everything in place:
 	// Movies/ and Shows/ are not nested into themselves.
 	for _, dir := range []string{"media/Movies", "media/Shows", "media", ""} {
-		wantAll(t, "rerun on "+dir, mustRun(t, "", "-yes", filepath.Join(root, filepath.FromSlash(dir))), "Renames: 0")
+		wantAll(t, "rerun on "+dir, mustRun(t, "", "-yes", filepath.Join(root, filepath.FromSlash(dir))), "nothing to do")
 	}
 
 	// A series filed under Movies/ goes to the Shows/ next to it.
@@ -800,7 +801,12 @@ func TestTitlesStayInTheirFolders(t *testing.T) {
 
 	// -out gathers everything in one place, in the same two folders.
 	lib := filepath.Join(t.TempDir(), "lib")
-	mustRun(t, "", "-yes", "-out", lib, root)
+	raw := t.TempDir()
+	for _, name := range []string{"Iron.Man.2008.mkv", "Startrek/Star.Trek.Enterprise.s1e01-02.Broken.Bow.mkv"} {
+		os.MkdirAll(filepath.Join(raw, filepath.Dir(name)), 0o755)
+		os.WriteFile(filepath.Join(raw, filepath.FromSlash(name)), []byte(name), 0o644)
+	}
+	mustRun(t, "", "-yes", "-out", lib, raw)
 	for _, want := range []string{"Shows/Звёздный путь - Энтерпрайз (2001)/tvshow.nfo", "Movies/Железный человек (2008)/Железный человек (2008).mkv"} {
 		if _, err := os.Stat(filepath.Join(lib, filepath.FromSlash(want))); err != nil {
 			t.Errorf("-out: %v\n  %s", err, strings.Join(tree(t, lib), "\n  "))
@@ -875,4 +881,59 @@ func TestWriteTagsWithRealTools(t *testing.T) {
 			t.Errorf("temporary files left: %v", left)
 		}
 	}
+}
+
+// Videos that already have an .nfo — MediaKeeper's own or another program's —
+// are left as they are; new files next to them are still organized.
+func TestKeepsDescribedFiles(t *testing.T) {
+	root := setup(t, Config{TMDBKey: "tmdbkey", Language: "ru-RU"},
+		"My Own Name For It.mkv",
+		"Kodi/Iron.Man.2008.mkv",
+		"Star.Trek.Enterprise.s1e01-02.Broken.Bow.mkv")
+	// A description written by another program, and one in a folder.
+	os.WriteFile(filepath.Join(root, "My Own Name For It.nfo"), []byte(nfoHeader+"<movie><title>Something</title></movie>"), 0o644)
+	os.WriteFile(filepath.Join(root, "Kodi", "movie.nfo"), []byte(nfoHeader+"<movie><title>Iron Man</title></movie>"), 0o644)
+	// A release's text "nfo" is not a description.
+	os.WriteFile(filepath.Join(root, "Star.Trek.Enterprise.s1e01-02.Broken.Bow.nfo"), []byte("  ___ SCENE GROUP ___\n"), 0o644)
+
+	out := mustRun(t, "", "-yes", root)
+	wantAll(t, "output", out, "Left alone: 2 file(s)", "Звёздный путь - Энтерпрайз (2001)")
+	for _, kept := range []string{"My Own Name For It.mkv", "Kodi/Iron.Man.2008.mkv", "Kodi/movie.nfo"} {
+		if !exists(filepath.Join(root, filepath.FromSlash(kept))) {
+			t.Errorf("%s was touched:\n  %s", kept, strings.Join(tree(t, root), "\n  "))
+		}
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, "My Own Name For It.nfo")); !strings.Contains(string(data), "Something") {
+		t.Errorf("a foreign .nfo was rewritten: %s", data)
+	}
+
+	// A new episode of the described series is filed; the series' own
+	// description stays as it is.
+	show := filepath.Join(root, showsFolder, "Звёздный путь - Энтерпрайз (2001)")
+	tvshow := filepath.Join(show, "tvshow.nfo")
+	marked := strings.Replace(mustRead(t, tvshow), "<tvshow>", "<tvshow><!-- edited by hand -->", 1)
+	os.WriteFile(tvshow, []byte(marked), 0o644)
+	os.WriteFile(filepath.Join(root, "Star.Trek.Enterprise.s2e01.mkv"), []byte("new"), 0o644)
+	mustRun(t, "", "-yes", root)
+	if !exists(filepath.Join(show, "Season 02", "Звёздный путь - Энтерпрайз S02E01 - Ударная волна - Часть 2.mkv")) {
+		t.Errorf("the new episode was not filed:\n  %s", strings.Join(tree(t, root), "\n  "))
+	}
+	if !strings.Contains(mustRead(t, tvshow), "edited by hand") {
+		t.Errorf("tvshow.nfo was rewritten for a new episode")
+	}
+
+	// -refresh redoes them.
+	mustRun(t, "", "-yes", "-refresh", root)
+	if exists(filepath.Join(root, "Kodi", "Iron.Man.2008.mkv")) {
+		t.Errorf("-refresh left the described file alone")
+	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

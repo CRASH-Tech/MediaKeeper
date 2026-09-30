@@ -105,6 +105,38 @@ func Group(files []*MediaFile) []*Unit {
 	return units
 }
 
+// hasNFO reports whether a video is already described: an .nfo with its
+// name, or a movie.nfo in its folder, that is a media center's description
+// (a release's text "nfo" with ASCII art does not count).
+func hasNFO(f *MediaFile) bool {
+	dir := filepath.Dir(f.Path)
+	stem := strings.TrimSuffix(filepath.Base(f.Path), filepath.Ext(f.Path))
+	if info := readNFO(filepath.Join(dir, stem+".nfo")); info != nil {
+		switch info.XMLName.Local {
+		case "movie", "episodedetails", "tvshow", "musicvideo":
+			return true
+		}
+	}
+	if !f.Guess.IsSeries {
+		if info := readNFO(filepath.Join(dir, "movie.nfo")); info != nil && info.XMLName.Local == "movie" {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutNFO drops the videos that are already described and counts them.
+func withoutNFO(files []*MediaFile) (todo []*MediaFile, described int) {
+	for _, f := range files {
+		if hasNFO(f) {
+			described++
+		} else {
+			todo = append(todo, f)
+		}
+	}
+	return todo, described
+}
+
 // existingID returns the source and the id recorded in an .nfo next to the
 // unit's files by a previous run, so that a library is not identified twice.
 func existingID(root string, u *Unit) (source, id, kind string, local LocalTitle) {

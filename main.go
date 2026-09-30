@@ -74,6 +74,7 @@ type App struct {
 	files  []*MediaFile
 
 	yes, dryRun, noTags, refresh bool
+	keepDescribed                bool // leave videos that have an .nfo alone: not renamed, not looked up, not tagged
 	noJournal                    bool // the source folder is temporary: there is nothing to undo into
 }
 
@@ -112,7 +113,7 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	dryRun := fs.Bool("dry-run", false, "show the plan and change nothing")
 	yes := fs.Bool("yes", false, "ask nothing: skip unclear files and apply the plan")
 	noTags := fs.Bool("no-tags", false, "do not write tags into the files")
-	refresh := fs.Bool("refresh", false, "identify again even if an .nfo is already there")
+	refresh := fs.Bool("refresh", false, "also redo videos that already have an .nfo, identifying them from scratch (they are left alone otherwise)")
 	undo := fs.Bool("undo", false, "revert the last run in this directory (repeat to go further back)")
 	setup := fs.Bool("setup", false, "enter API keys and exit")
 	serve := fs.Bool("serve", false, "run the server for the directory: web interface, Jellyfin API and DLNA")
@@ -217,7 +218,7 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	}
 
 	a := &App{ui: ui, root: root, out: dest, outSet: *outDir != "",
-		yes: *yes, dryRun: *dryRun, noTags: *noTags, refresh: *refresh}
+		yes: *yes, dryRun: *dryRun, noTags: *noTags, refresh: *refresh, keepDescribed: !*refresh}
 	a.hub = NewHub(providers, func(name, reason string) {
 		ui.Printf("%s\n", ui.Dim(fmt.Sprintf("  (source %s is switched off for this run: %s)", name, reason)))
 	})
@@ -295,9 +296,21 @@ func (a *App) Run() error {
 		ui.Printf("No video files in %s.\n", a.root)
 		return nil
 	}
-	a.files = files
-	units := Group(files)
-	ui.Printf("Files found: %d (movies and series: %d)\n\n", len(files), len(units))
+	a.files = files // all of them: where titles belong is judged against everything on disk
+	todo := files
+	if a.keepDescribed {
+		var described int
+		todo, described = withoutNFO(files)
+		if described > 0 {
+			ui.Printf("%s\n", ui.Dim(fmt.Sprintf("Left alone: %d file(s) that already have an .nfo (-refresh redoes them).", described)))
+		}
+		if len(todo) == 0 {
+			ui.Printf("Every video in %s already has an .nfo: nothing to do.\n", a.root)
+			return nil
+		}
+	}
+	units := Group(todo)
+	ui.Printf("Files found: %d (movies and series: %d)\n\n", len(todo), len(units))
 
 	plan := &Plan{}
 	skipped := 0
