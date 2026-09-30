@@ -5,7 +5,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,45 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 )
-
-type Config struct {
-	TMDBKey      string   `json:"tmdb_api_key,omitempty"`
-	KinopoiskKey string   `json:"kinopoisk_api_key,omitempty"`
-	OMDbKey      string   `json:"omdb_api_key,omitempty"`
-	Language     string   `json:"language,omitempty"`
-	Sources      []string `json:"sources,omitempty"` // order of priority
-	TMDBURL      string   `json:"tmdb_api_url,omitempty"`
-	TMDBImageURL string   `json:"tmdb_image_url,omitempty"`
-}
-
-func configPath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "mediakeeper", "config.json")
-}
-
-func loadConfig() (cfg Config, exists bool) {
-	data, err := os.ReadFile(configPath())
-	if err != nil {
-		return cfg, false
-	}
-	json.Unmarshal(data, &cfg)
-	return cfg, true
-}
-
-func saveConfig(c Config) error {
-	path := configPath()
-	if path == "" {
-		return errors.New("cannot determine the configuration directory")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	data, _ := json.MarshalIndent(c, "", "  ")
-	return os.WriteFile(path, append(data, '\n'), 0o600)
-}
 
 // The default priority. The first source with a confident match names the
 // file; Wikidata and IMDb only find a title and pass it on to the others.
@@ -131,7 +91,7 @@ func main() {
 }
 
 func run(args []string, in io.Reader, out io.Writer) error {
-	cfg, hasConfig := loadConfig()
+	cfg, hasConfig, cfgErr := loadConfig()
 	fs := flag.NewFlagSet("mediakeeper", flag.ContinueOnError)
 	fs.SetOutput(out)
 	fs.Usage = func() {
@@ -157,13 +117,18 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	setup := fs.Bool("setup", false, "enter API keys and exit")
 	serve := fs.Bool("serve", false, "run the server for the directory: web interface, Jellyfin API and DLNA")
 	port := fs.Int("port", 8200, "with -serve: HTTP port of the server")
-	name := fs.String("name", "", "with -serve: the name clients show (default: MediaKeeper on <host>)")
+	name := fs.String("name", "", "with -serve: the name clients show (default: the host name)")
 	dlna := fs.Bool("dlna", true, "with -serve: also be a DLNA media server (no login, the whole local network can watch)")
 	guests := fs.Bool("guests", true, "with -serve: the web interface can be browsed and watched without signing in")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if cfgErr != nil {
+		return cfgErr
+	}
+	set := map[string]bool{} // flags given on the command line win over the settings file
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	if *showVersion {
 		fmt.Fprintln(out, "mediakeeper", version)
 		return nil
@@ -225,13 +190,27 @@ func run(args []string, in io.Reader, out io.Writer) error {
 		return err
 	}
 	if *serve {
-		if *name == "" {
-			*name = "MediaKeeper"
-			if host, err := os.Hostname(); err == nil {
-				*name += " on " + host
-			}
+		o := ServerOptions{Root: root, Name: *name, Port: *port, DLNA: *dlna, Guests: *guests, NoTags: *noTags, Config: cfg}
+		sc := cfg.Server
+		if !set["name"] && sc.Name != "" {
+			o.Name = sc.Name
 		}
-		return Serve(ui, ServerOptions{Root: root, Name: *name, Port: *port, DLNA: *dlna, Guests: *guests, NoTags: *noTags, Config: cfg})
+		if !set["port"] && sc.Port != 0 {
+			o.Port = sc.Port
+		}
+		if !set["dlna"] && sc.DLNA != nil {
+			o.DLNA = *sc.DLNA
+		}
+		if !set["guests"] && sc.Guests != nil {
+			o.Guests = *sc.Guests
+		}
+		if !set["no-tags"] && sc.NoTags {
+			o.NoTags = true
+		}
+		if o.Name == "" {
+			o.Name = hostName()
+		}
+		return Serve(ui, o)
 	}
 	if len(providers) == 0 {
 		return errors.New("no sources at all: check -sources and the keys (mediakeeper -setup)")

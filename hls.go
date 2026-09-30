@@ -35,11 +35,12 @@ const (
 	// few minutes in. So the announced maximum is fixed for the session:
 	// exact for a re-encoded track, generous for a copied one.
 	hlsCopyTarget = 30
-	// With such a long target Safari rereads the playlist only every half
-	// minute, so the first version it gets must already reach that far.
-	hlsCopyFirstSegments = 5
-	hlsAhead             = 20 // segments ffmpeg may run ahead of the viewer ...
-	hlsResume            = 10 // ... and where it is let go again
+	// With such a long target Safari rereads the playlist only about every
+	// half minute, so the first version it gets reaches well past that: a
+	// copied track is produced in moments, so this costs no waiting.
+	hlsCopyFirstSeconds = 2.5 * hlsCopyTarget
+	hlsAhead            = 20 // segments ffmpeg may run ahead of the viewer ...
+	hlsResume           = 10 // ... and where it is let go again
 )
 
 type hlsSession struct {
@@ -48,8 +49,10 @@ type hlsSession struct {
 	stderr        bytes.Buffer
 	exited        chan struct{}
 
-	target        int // the fixed EXT-X-TARGETDURATION of the playlist
-	firstSegments int // segments the first playlist waits for
+	target       int     // the fixed EXT-X-TARGETDURATION of the playlist
+	firstSeconds float64 // of video the first playlist waits for
+	converting   bool    // the video track is re-encoded, not copied
+	warned       time.Time
 
 	mu      sync.Mutex
 	last    time.Time // of the latest request
@@ -109,9 +112,9 @@ func (m *hlsManager) start(it *CatItem, user *User, from float64, audio int) (*h
 		"-hls_segment_filename", filepath.Join(dir, "seg%05d.ts"), filepath.Join(dir, "index.m3u8"))
 
 	sess := &hlsSession{id: randomHex(12), dir: dir, user: user.ID, last: time.Now(), exited: make(chan struct{}),
-		target: hlsSegmentSeconds, firstSegments: 1}
+		target: hlsSegmentSeconds, firstSeconds: 1, converting: !copied}
 	if copied {
-		sess.target, sess.firstSegments = hlsCopyTarget, hlsCopyFirstSegments
+		sess.target, sess.firstSeconds = hlsCopyTarget, hlsCopyFirstSeconds
 	}
 	sess.cmd = exec.Command(s.ffmpeg, args...)
 	sess.cmd.Stderr = &sess.stderr
@@ -265,13 +268,18 @@ func (m *hlsManager) api(w http.ResponseWriter, r *http.Request, u *User, parts 
 			if served {
 				return true
 			}
-			segments, _ := filepath.Glob(filepath.Join(sess.dir, "seg*.ts"))
 			select {
 			case <-sess.exited:
 				return true // a short video: this is all there is
 			default:
-				return len(segments) >= sess.firstSegments
 			}
+			playlist, _ := os.ReadFile(path)
+			seconds := 0.0
+			for _, m := range reExtinf.FindAllSubmatch(playlist, -1) {
+				d, _ := strconv.ParseFloat(string(m[1]), 64)
+				seconds += d
+			}
+			return seconds >= sess.firstSeconds
 		}
 		for deadline := time.Now().Add(30 * time.Second); !ready(); time.Sleep(100 * time.Millisecond) {
 			select {
@@ -303,12 +311,34 @@ func (m *hlsManager) api(w http.ResponseWriter, r *http.Request, u *User, parts 
 		sess.mu.Lock()
 		sess.lastSeg = max(sess.lastSeg, n)
 		sess.mu.Unlock()
+		m.starving(sess, n)
 		w.Header().Set("Content-Type", "video/mp2t")
 		http.ServeFile(w, r, filepath.Join(sess.dir, name))
 	default:
 		apiError(w, http.StatusNotFound, errNotFound)
 	}
 }
+
+// starving notes in the log when the viewer asks for the newest segment of
+// a conversion that is still running: the server converts barely faster
+// than the video plays, and playback stutters whenever it falls behind.
+func (m *hlsManager) starving(sess *hlsSession, asked int) {
+	select {
+	case <-sess.exited:
+		return // everything is there
+	default:
+	}
+	segments, _ := filepath.Glob(filepath.Join(sess.dir, "seg*.ts"))
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if !sess.converting || sess.paused || asked < len(segments)-2 || time.Since(sess.warned) < time.Minute {
+		return
+	}
+	sess.warned = time.Now()
+	m.s.log("HLS: the viewer has caught up with the conversion — the server converts too slowly for smooth playback")
+}
+
+var reExtinf = regexp.MustCompile(`#EXTINF:([\d.]+)`)
 
 // convertArgs are the ffmpeg options that turn any video into what
 // browsers play: H.264 and stereo AAC. A video track that already is H.264

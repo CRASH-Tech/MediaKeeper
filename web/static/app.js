@@ -91,8 +91,35 @@ async function render() {
   }
 }
 
+// Line icons for the navigation, 24×24, drawn with the current text colour.
+const icons = {
+  movies: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 9h18M8 5l-1 4M13 5l-1 4M18 5l-1 4"/></svg>',
+  shows: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="3"/><path d="M8 21h8M9 2l3 4 3-4"/></svg>',
+  downloads: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"/></svg>',
+  users: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
+  play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" fill="currentColor" stroke="none"/></svg>',
+};
+const icon = name => h("span", { class: "icon", innerHTML: icons[name] });
+
+// The blurred picture behind the whole page: the backdrop of the title that
+// is open, or none (the plain background) on the lists. A title page asks
+// for it while it is being built; shell() puts it up.
+let pendingAmbient = null;
+function setAmbient(url) {
+  document.getElementById("ambient").style.backgroundImage = url || "";
+  document.body.classList.toggle("has-ambient", !!url);
+}
+
 function shell(page, ...content) {
-  const link = (id, label, extra) => h("a", { href: "#" + id, class: page === id ? "active" : "" }, label, extra);
+  const link = (id, label, extra) => h("a", { href: "#" + id, class: page === id ? "active" : "" }, icon(id), h("span", { class: "label" }, label), extra);
+  setAmbient(pendingAmbient);
+  pendingAmbient = null;
+  // The sections: in the header on a wide screen, in a floating tab bar at
+  // the bottom on a phone.
+  const sections = cls => h("nav", { class: cls },
+    link("movies", "Movies"), link("shows", "Shows"),
+    me.admin && link("downloads", "Downloads", h("span", { class: "badge hidden attention" })),
+    me.admin && link("users", "Users"));
   const search = h("input", {
     type: "search", placeholder: "Search", "aria-label": "Search",
     oninput: () => {
@@ -102,18 +129,17 @@ function shell(page, ...content) {
     },
   });
   app.replaceChildren(
-    h("header", {},
+    h("header", { class: "glass" },
       h("a", { class: "brand", href: "#movies" }, library ? library.name : "MediaKeeper"),
-      h("nav", {},
-        link("movies", "Movies"), link("shows", "Shows"),
-        me.admin && link("downloads", "Downloads", h("span", { class: "badge hidden", id: "attention" })),
-        me.admin && link("users", "Users")),
+      sections("glass"),
       h("span", { class: "spacer" }),
       ["movies", "shows", "browse"].includes(page) && search,
       me.guest ? h("a", { class: "button small", href: "#login" }, "Sign in") : [
-        h("span", { class: "dim" }, me.name),
+        h("span", { class: "account" }, me.name),
         h("button", { class: "small", onclick: signOut }, "Sign out")]),
-    h("main", {}, ...content));
+    h("main", {}, ...content),
+    sections("tabbar glass"));
+  if (!document.querySelector("main .grid")) search.remove(); // it filters the posters of a list
   window.scrollTo(0, 0);
   if (me.admin) refreshBadge();
 }
@@ -131,8 +157,7 @@ async function refreshBadge(list) {
   try {
     list = list || await api("downloads");
     const n = list.filter(d => d.state === "attention").length;
-    const badge = document.getElementById("attention");
-    if (badge) { badge.textContent = n; badge.classList.toggle("hidden", !n); }
+    for (const badge of document.querySelectorAll(".attention")) { badge.textContent = n; badge.classList.toggle("hidden", !n); }
   } catch { /* the badge is not worth an error message */ }
 }
 
@@ -144,7 +169,7 @@ function renderLogin() {
   const error = h("p", { class: "error" });
   document.title = "MediaKeeper";
   app.replaceChildren(h("form", {
-    class: "login",
+    class: "login glass",
     onsubmit: async e => {
       e.preventDefault();
       try {
@@ -226,9 +251,24 @@ function renderList(page, items, query) {
     [["title", "By title"], ["year", "Newest first"], ["added", "Recently added"], ["rating", "Best rated"]]
       .map(([v, label]) => h("option", { value: v, selected: v === order }, label)));
   shell(page,
-    items.length > 0 && h("div", { class: "filters" }, selects, sort,
-      chosen.length > 0 && h("a", { href: "#" + page }, "Clear")),
+    items.length > 0 && filterBar(selects, sort, chosen.length, "#" + page),
     grid(shown, chosen.length ? "No titles match all of these." : undefined));
+}
+
+// filterBar lays out the filters. On a wide screen they stand in one row;
+// on a narrow one they fold behind a "Filters" button and open as a grid.
+let filtersOpen = false;
+function filterBar(selects, sort, active, clearHref) {
+  const bar = h("div", { class: "filters" + (filtersOpen ? " open" : "") },
+    h("button", {
+      class: "filters-toggle", "aria-expanded": String(filtersOpen),
+      onclick: () => { filtersOpen = bar.classList.toggle("open"); toggle.setAttribute("aria-expanded", String(filtersOpen)); },
+    }, "Filters", active > 0 && h("span", { class: "count" }, active)),
+    h("div", { class: "filter-list" }, selects),
+    sort,
+    active > 0 && h("a", { class: "clear", href: clearHref }, "Clear"));
+  const toggle = bar.firstChild;
+  return bar;
 }
 
 // The groups a title belongs to. Each value links to everything else in
@@ -294,11 +334,12 @@ function hero(x, ...rest) {
     x.rating > 0 && "★ " + x.rating,
     x.mpaa,
   ].filter(Boolean);
-  return h("div", { class: "hero", style: x.backdrop ? `background-image:${image(x.id, "backdrop")}` : "" },
-    fixButton(x),
+  pendingAmbient = x.backdrop ? image(x.id, "backdrop") : x.poster ? image(x.id, "poster") : null;
+  return h("div", { class: x.backdrop ? "hero" : "hero plain", style: x.backdrop ? `--backdrop:${image(x.id, "backdrop")}` : "" },
     h("div", { class: "inner" },
       x.poster && h("img", { class: "poster", src: `/api/image/${x.id}/poster`, alt: "" }),
-      h("div", { class: "info" },
+      h("div", { class: "info glass" },
+        fixButton(x),
         h("h1", {}, fullTitle(x)),
         x.tagline && h("p", { class: "tagline" }, x.tagline),
         h("div", { class: "meta" }, meta.map((m, i) => [i > 0 && " · ", m])),
@@ -323,11 +364,11 @@ function renderMovie(id) {
   const file = h("dd", {}, "…");
   shell("movies",
     hero(m, h("div", { class: "actions" },
-      h("button", { class: "primary", onclick: () => play(m) }, playLabel(m)),
+      h("button", { class: "primary", onclick: () => play(m) }, icon("play"), playLabel(m)),
       m.position > 0 && h("button", { onclick: () => play(m, 0) }, "From the beginning"),
       !me.guest && h("button", { onclick: () => toggleWatched(m) }, m.played ? "Mark as not watched" : "Mark as watched"),
       h("a", { class: "button", href: `/api/stream/${m.id}`, download: "" }, "Download the file"))),
-    h("div", { class: "details" }, details(m, [["File", file]])));
+    h("div", { class: "details glass" }, details(m, [["File", file]])));
   // What is inside the file comes with a separate request.
   api("item/" + id).then(info => {
     const audio = (info.audio || []).map(a => [a.language, a.codec, a.channels && a.channels + "ch"].filter(Boolean).join(" ")).join(", ");
@@ -347,7 +388,7 @@ function renderShow(id) {
   const label = e => `S${e.season}E${e.episode}${e.episodeEnd > e.episode ? "-" + e.episodeEnd : ""}`;
   shell("shows",
     hero(show, h("div", { class: "actions" },
-      next && h("button", { class: "primary", onclick: () => play(next, undefined, episodes) }, `${playLabel(next)} · ${label(next)}`),
+      next && h("button", { class: "primary", onclick: () => play(next, undefined, episodes) }, icon("play"), `${playLabel(next)} · ${label(next)}`),
     )),
     h("div", { class: "tabs" }, show.seasons.map(s => h("button", {
       class: s === current ? "active" : "",
@@ -361,7 +402,7 @@ function renderShow(id) {
         h("div", { class: "dim" }, [e.date, minutes(e.duration)].filter(Boolean).join(" · ")),
         h("div", { class: "plot" }, e.plot)),
       !me.guest && h("button", { class: "small", onclick: ev => { ev.stopPropagation(); toggleWatched(e); } }, e.played ? "Unwatch" : "Watched"))),
-    h("div", { class: "details" }, details(show)));
+    h("div", { class: "details glass" }, details(show)));
 }
 
 // --------------------------------------------------- choosing what it is
@@ -442,7 +483,7 @@ function openFix(x) {
   const close = () => box.remove();
   const unit = { kind: isShow(x) ? "tv" : "movie", title: x.title, year: x.year };
   const box = h("div", { class: "modal", onclick: e => { if (e.target === box) close(); } },
-    h("div", { class: "panel" },
+    h("div", { class: "panel glass sheet" },
       h("div", { class: "row" }, h("h2", { class: "grow", style: "margin:0" }, "What is it really?"), h("button", { class: "small", onclick: close }, "Close")),
       h("p", { class: "dim" }, "The files are renamed and moved as for a new title, and the description and artwork are replaced."),
       identifyForm({
@@ -479,14 +520,14 @@ async function play(item, startAt, queue) {
   const note = h("div", { class: "note hidden" });
   const slider = h("input", { type: "range", min: 0, max: Math.max(1, Math.floor(duration)), step: 1, "aria-label": "Seek" });
   const clock = h("span", {});
-  const seek = h("div", { class: "seek hidden" }, slider, clock);
+  const seek = h("div", { class: "seek glass hidden" }, slider, clock);
   const audioSelect = (info.audio || []).length > 1 && h("select", {
     "aria-label": "Audio track",
     onchange: () => { audio = +audioSelect.value; convert(position()); },
   }, info.audio.map((a, i) => h("option", { value: i }, `Audio ${i + 1}: ${[a.title, a.language, a.codec].filter(Boolean).join(", ")}`)));
   const mode = h("button", { onclick: () => converted ? direct(position()) : convert(position()) });
   const box = h("div", { class: "player" },
-    h("div", { class: "top" },
+    h("div", { class: "top glass" },
       h("button", { onclick: close }, "← Back"),
       h("span", { class: "name" }, item.show ? `${item.show} · S${item.season}E${item.episode} · ${item.title}` : fullTitle(item)),
       audioSelect, info.canTranscode && mode),
@@ -640,7 +681,7 @@ async function renderDownloads() {
   function card(d) {
     const act = async (path, options) => { draw(await api(`downloads/${d.id}${path}`, options), true); library = null; };
     const alerting = (path, options) => act(path, options).catch(err => alert(err.message));
-    return h("div", { class: "panel download" },
+    return h("div", { class: "panel glass download" },
       h("div", { class: "head" },
         h("span", { class: "name" }, d.name),
         h("span", { class: "state " + d.state }, stateNames[d.state] || d.state),
@@ -660,7 +701,7 @@ async function renderDownloads() {
   }
 
   shell("downloads",
-    h("form", { class: "panel form", onsubmit: add },
+    h("form", { class: "panel glass form", onsubmit: add },
       h("div", { class: "row" }, source, h("button", { class: "primary" }, "Download")),
       h("div", { class: "row", style: "margin-top:10px" }, h("span", { class: "dim" }, "or a .torrent file:"), file),
       h("p", { class: "dim", style: "margin-bottom:0" }, "After downloading, the file is identified, renamed and put into Movies or Shows. If the program is not sure, it asks here."),
@@ -685,7 +726,7 @@ async function renderUsers() {
   let users = [];
   try { users = await api("users"); } catch (err) { error.textContent = err.message; }
   shell("users",
-    h("div", { class: "panel" },
+    h("div", { class: "panel glass" },
       h("table", {},
         h("tr", {}, h("th", {}, "User"), h("th", {}, "Role"), h("th", {})),
         users.map(u => h("tr", {},
@@ -698,7 +739,7 @@ async function renderUsers() {
               class: "small danger",
               onclick: async () => { if (confirm(`Delete ${u.name}?`)) { try { await api("users/" + u.id, { method: "DELETE" }); renderUsers(); } catch (err) { error.textContent = err.message; } } },
             }, "Delete"))))))),
-    h("form", { class: "panel", onsubmit: e => { e.preventDefault(); save({ name: name.value, password: pass.value, admin: admin.checked }); } },
+    h("form", { class: "panel glass", onsubmit: e => { e.preventDefault(); save({ name: name.value, password: pass.value, admin: admin.checked }); } },
       h("h2", { style: "margin-top:0" }, "Add a user"),
       h("div", { class: "row" }, name, pass, h("label", { for: "admin" }, admin, " administrator"), h("button", { class: "primary" }, "Add")),
       h("p", { class: "dim", style: "margin-bottom:0" }, "The same name and password work in Jellyfin apps: add this server's address there."),

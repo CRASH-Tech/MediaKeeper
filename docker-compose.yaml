@@ -47,7 +47,9 @@ services:
       - ./media:/media # the library: Movies/ and Shows/ are created inside
       - ./config:/config # settings, accounts, watch progress; must be writable by the user above
 
-    command: ["-serve", "-port", "8200", "-name", "MediaKeeper", "/media"]
+    # The server's settings can also live in ./config/mediakeeper/config.yaml.
+    # The name clients show is the host name unless set with -name.
+    command: ["-serve", "-port", "8200", "/media"]
 
     # Needed by "docker compose run" for the interactive dialogs.
     stdin_open: true

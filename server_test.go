@@ -22,7 +22,7 @@ func init() { pbkdf2Rounds = 1000 } // real hashing is deliberately slow; tests 
 func serverFixture(t *testing.T) (*Server, *httptest.Server) {
 	setup(t, Config{TMDBKey: "tmdbkey", Language: "ru-RU"})
 	root := dlnaLibraryFiles(t)
-	cfg, _ := loadConfig()
+	cfg, _, _ := loadConfig()
 	s, err := NewServer(ServerOptions{Root: root, Name: "Test", Port: 8200, DLNA: true, NoTags: true, Config: cfg},
 		func(string, ...any) {})
 	if err != nil {

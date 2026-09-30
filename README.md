@@ -192,7 +192,7 @@ printed once. To choose your own, or to reset a forgotten one, start the
 server with `MEDIAKEEPER_ADMIN_PASSWORD` (and optionally `MEDIAKEEPER_ADMIN`
 for the name). More users are added on the **Users** page. Accounts, login
 tokens and watch progress are kept in `server.json` next to the settings
-file; passwords are stored as salted PBKDF2 hashes.
+file (see below); passwords are stored as salted PBKDF2 hashes.
 
 The server speaks plain HTTP. To reach it from the internet, put it behind a
 reverse proxy with TLS.
@@ -364,30 +364,42 @@ mediakeeper [options] [directory]        (directory: the current one by default)
 | `-setup`        | Enter API keys and exit                                                 |
 | `-serve`        | Run the media server for the directory instead of organizing it         |
 | `-port N`       | With `-serve`: HTTP port (default 8200)                                 |
-| `-name NAME`    | With `-serve`: the name clients show                                    |
+| `-name NAME`    | With `-serve`: the name clients show (default: the host name)          |
 | `-dlna=false`   | With `-serve`: do not be a DLNA server (DLNA has no login)              |
 | `-guests=false` | With `-serve`: require a login to watch in the web interface            |
 | `-version`      | Print the version                                                       |
 
 ## Settings file
 
-`~/.config/mediakeeper/config.json` (in Docker: `/config/mediakeeper/config.json`).
-All fields are optional.
+`~/.config/mediakeeper/config.yaml` (in Docker: `/config/mediakeeper/config.yaml`).
+Every setting is optional, and a flag on the command line wins over the file.
+`mediakeeper -setup` writes the file with a comment for every setting;
+it can be edited by hand afterwards. A misspelt key is reported instead of
+silently ignored. A `config.json` from an earlier version is converted on
+the first start and kept as `config.json.old`.
 
-```json
-{
-  "tmdb_api_key": "...",
-  "omdb_api_key": "...",
-  "kinopoisk_api_key": "...",
-  "language": "ru-RU",
-  "sources": ["tmdb", "tvmaze", "omdb", "wikidata", "imdb"],
-  "tmdb_api_url": "https://api.themoviedb.org/3",
-  "tmdb_image_url": "https://image.tmdb.org/t/p/original"
-}
+```yaml
+tmdb_api_key: "..."
+omdb_api_key: "..."
+kinopoisk_api_key: "..."
+language: ru-RU
+sources: [tmdb, tvmaze, omdb, wikidata, imdb]
+tmdb_api_url: https://api.themoviedb.org/3
+tmdb_image_url: https://image.tmdb.org/t/p/original
+
+server:              # mediakeeper -serve
+  name: Living room  # the name clients show; the host name by default
+  port: 8200
+  dlna: true         # DLNA has no login: the whole local network can watch
+  guests: true       # the web interface can be watched without signing in
+  no_tags: false     # do not write tags into the files of downloads
 ```
 
 `tmdb_api_url` and `tmdb_image_url` point MediaKeeper at a mirror where TMDB
 itself is not reachable; a proxy from `HTTPS_PROXY` is honoured as well.
+
+Accounts, login tokens and watch progress are not settings: the server keeps
+them in `server.json` next to this file.
 
 ## Building from source
 
