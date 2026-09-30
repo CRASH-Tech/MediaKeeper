@@ -14,7 +14,7 @@
 
 services:
   mediakeeper:
-    image: ghcr.io/OWNER/mediakeeper:latest # replace OWNER with the GitHub account
+    image: OWNER/mediakeeper:latest # replace OWNER with the Docker Hub account
     # build: .                              # or build from the sources here
     container_name: mediakeeper
     restart: unless-stopped

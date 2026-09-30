@@ -1,8 +1,8 @@
 name: build
 
-# Every push and pull request is tested and built. A push to main also
-# publishes the "edge" Docker image; a tag like v1.2.3 publishes a GitHub
-# release with the binaries and the versioned Docker image.
+# Every push and pull request is tested and built, nothing is published.
+# A tag like v1.2.3 is a release: the binaries go to a GitHub release and
+# the Docker image to Docker Hub.
 on:
   push:
     branches: [main]
@@ -91,38 +91,42 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
 
+  # The image goes to Docker Hub as <DOCKERHUB_USERNAME>/mediakeeper. It needs,
+  # in the repository settings (Secrets and variables -> Actions):
+  #   variable DOCKERHUB_USERNAME - the Docker Hub account or organization
+  #   secret   DOCKERHUB_TOKEN    - an access token with Read & Write scope
   docker:
     needs: test
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    env:
+      PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
+        if: env.PUBLISH == 'true'
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
-          # v1.2.3 -> 1.2.3, 1.2 and latest; main -> edge
+          # The fallback name only lets unpublished builds run in a
+          # repository where Docker Hub is not set up.
+          images: ${{ vars.DOCKERHUB_USERNAME || 'local' }}/mediakeeper
+          # v1.2.3 -> 1.2.3, 1.2 and latest
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=edge,branch=main
+            type=ref,event=branch
             type=ref,event=pr
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          # Pull requests only check that the image builds.
-          push: ${{ github.event_name != 'pull_request' }}
+          # Only a v* tag is published; other builds check that the image builds.
+          push: ${{ env.PUBLISH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: VERSION=${{ steps.meta.outputs.version }}
