@@ -4,15 +4,12 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -59,7 +56,13 @@ const (
 type nfoInfo struct {
 	XMLName   xml.Name
 	Title     string   `xml:"title"`
+	Original  string   `xml:"originaltitle"`
 	Localized string   `xml:"localizedtitle"`
+	Tagline   string   `xml:"tagline"`
+	MPAA      string   `xml:"mpaa"`
+	Rating    float64  `xml:"rating"`
+	Status    string   `xml:"status"`
+	UniqueIDs []nfoUID `xml:"uniqueid"`
 	ShowTitle string   `xml:"showtitle"`
 	Year      int      `xml:"year"`
 	Premiered string   `xml:"premiered"`
@@ -69,6 +72,24 @@ type nfoInfo struct {
 	Season    int      `xml:"season"`
 	Episode   int      `xml:"episode"`
 	Genres    []string `xml:"genre"`
+	Countries []string `xml:"country"`
+	Studios   []string `xml:"studio"`
+	Directors []string `xml:"director"`
+	Writers   []string `xml:"credits"`
+	Actors    []struct {
+		Name string `xml:"name"`
+		Role string `xml:"role"`
+	} `xml:"actor"`
+}
+
+func (n *nfoInfo) cast() []Person {
+	var out []Person
+	for _, a := range n.Actors {
+		if a.Name != "" {
+			out = append(out, Person{Name: a.Name, Role: a.Role})
+		}
+	}
+	return out
 }
 
 // readNFO parses the first document of an .nfo file (an episode file may
@@ -287,93 +308,4 @@ func (n *dlnaNode) items() []*dlnaNode {
 		out = append(out, c.items()...)
 	}
 	return out
-}
-
-// probeInfo is what ffprobe measures in a file.
-type probeInfo struct {
-	Duration      time.Duration
-	Width, Height int
-}
-
-// prober measures durations and frame sizes in the background, so that
-// clients can show a progress bar. Without ffprobe it stays empty and the
-// runtime from the .nfo is used instead.
-type prober struct {
-	tool  string
-	mu    sync.Mutex
-	known map[string]probeInfo // by path + size + mtime
-	queue chan *dlnaNode
-}
-
-func newProber() *prober {
-	p := &prober{known: map[string]probeInfo{}, queue: make(chan *dlnaNode, 4096)}
-	p.tool, _ = exec.LookPath("ffprobe")
-	if p.tool != "" {
-		go p.work()
-	}
-	return p
-}
-
-func probeKey(n *dlnaNode) string {
-	return fmt.Sprintf("%s|%d|%d", n.Path, n.Size, n.ModTime.UnixNano())
-}
-
-func (p *prober) get(n *dlnaNode) (probeInfo, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	info, ok := p.known[probeKey(n)]
-	return info, ok
-}
-
-// enqueue schedules the videos that were not measured yet.
-func (p *prober) enqueue(lib *dlnaLibrary) {
-	if p.tool == "" {
-		return
-	}
-	seen := map[string]bool{}
-	for _, n := range lib.nodes {
-		if !n.IsItem() || seen[n.Path] {
-			continue
-		}
-		seen[n.Path] = true
-		if _, ok := p.get(n); !ok {
-			select {
-			case p.queue <- n:
-			default: // a huge library: the rest is picked up by the next scan
-			}
-		}
-	}
-}
-
-func (p *prober) work() {
-	for n := range p.queue {
-		if _, ok := p.get(n); ok {
-			continue
-		}
-		var info probeInfo
-		out, err := exec.Command(p.tool, "-v", "error", "-select_streams", "v:0",
-			"-show_entries", "format=duration:stream=width,height", "-of", "json", n.Path).Output()
-		if err == nil {
-			var res struct {
-				Streams []struct {
-					Width  int `json:"width"`
-					Height int `json:"height"`
-				} `json:"streams"`
-				Format struct {
-					Duration string `json:"duration"`
-				} `json:"format"`
-			}
-			if json.Unmarshal(out, &res) == nil {
-				if d, err := time.ParseDuration(res.Format.Duration + "s"); err == nil {
-					info.Duration = d
-				}
-				if len(res.Streams) > 0 {
-					info.Width, info.Height = res.Streams[0].Width, res.Streams[0].Height
-				}
-			}
-		}
-		p.mu.Lock()
-		p.known[probeKey(n)] = info // an unreadable file is remembered too
-		p.mu.Unlock()
-	}
 }

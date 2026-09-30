@@ -106,6 +106,9 @@ func TestSanitize(t *testing.T) {
 
 type obj = map[string]any
 
+// fakeURL is the address of the fake services of the running test.
+var fakeURL string
+
 // wikidataTitleLookups counts the Russian-title lookups that found nothing.
 var wikidataTitleLookups int
 
@@ -354,6 +357,14 @@ func fakeServices(t *testing.T) *httptest.Server {
 	})
 
 	mux.HandleFunc("/img/", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "JPEG"+r.URL.Path) })
+	// Any file name can be downloaded from here, for the download tests.
+	mux.HandleFunc("/files/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "missing") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		fmt.Fprint(w, "video:"+strings.TrimPrefix(r.URL.Path, "/files/"))
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/tmdb/search/") {
 			reply(w, obj{"results": []obj{}})
@@ -375,6 +386,7 @@ func fakeServices(t *testing.T) *httptest.Server {
 // files with the given names.
 func setup(t *testing.T, cfg Config, names ...string) string {
 	srv := fakeServices(t)
+	fakeURL = srv.URL
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, env := range []string{"TMDB_API_KEY", "KINOPOISK_API_KEY", "OMDB_API_KEY"} {
 		t.Setenv(env, "")

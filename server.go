@@ -1,0 +1,365 @@
+package main
+
+import (
+	"context"
+	"embed"
+	"errors"
+	"fmt"
+	"io/fs"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+//go:embed web
+var webFiles embed.FS
+
+// Server is everything -serve runs on one port: the web interface with its
+// API, the Jellyfin-compatible API for native clients, and (unless switched
+// off) the DLNA media server.
+type Server struct {
+	root, name string
+	port       int
+	cfg        Config
+	noTags     bool
+	guests     bool // the web interface can be watched without signing in
+	log        func(format string, args ...any)
+
+	prober *prober
+	lib    *Library
+	auth   *Auth
+	dl     *Downloads
+	dlna   *DLNAServer
+	ffmpeg string
+
+	transcodes chan struct{} // limits simultaneous ffmpeg processes
+	hls        *hlsManager
+	organizing sync.Mutex // one change of the library at a time
+
+	loginMu  sync.Mutex
+	failures map[string][]time.Time // failed logins by address
+}
+
+// ServerOptions are the command-line choices for -serve.
+type ServerOptions struct {
+	Root, Name string
+	Port       int
+	DLNA       bool
+	Guests     bool
+	NoTags     bool
+	Config     Config
+}
+
+func NewServer(o ServerOptions, log func(string, ...any)) (*Server, error) {
+	auth, err := OpenAuth(filepath.Join(filepath.Dir(configPath()), "server.json"))
+	if err != nil {
+		return nil, err
+	}
+	s := &Server{root: o.Root, name: o.Name, port: o.Port, cfg: o.Config, noTags: o.NoTags, guests: o.Guests, log: log,
+		prober: newProber(), auth: auth, transcodes: make(chan struct{}, 2), failures: map[string][]time.Time{}}
+	s.ffmpeg, _ = exec.LookPath("ffmpeg")
+	s.lib = NewLibrary(o.Root, s.prober)
+	if _, err := s.lib.Catalog(); err != nil {
+		return nil, err
+	}
+	if o.DLNA {
+		if s.dlna, err = newDLNAServer(o.Root, o.Name, o.Port, log, s.prober); err != nil {
+			return nil, err
+		}
+	}
+	s.dl = NewDownloads(s)
+	s.hls = newHLSManager(s)
+	return s, nil
+}
+
+// refresh makes the catalogue and the DLNA tree show a change at once.
+func (s *Server) refresh() {
+	s.lib.Invalidate()
+	if s.dlna != nil {
+		s.dlna.mu.Lock()
+		s.dlna.scanned = time.Time{}
+		s.dlna.mu.Unlock()
+	}
+}
+
+var dlnaPrefixes = []string{"/rootDesc.xml", "/scpd/", "/ctl/", "/evt/", "/media/", "/art/", "/sub/"}
+
+func (s *Server) Handler() http.Handler {
+	static, _ := fs.Sub(webFiles, "web")
+	files := http.FileServer(http.FS(static))
+	var dlna http.Handler
+	if s.dlna != nil {
+		dlna = s.dlna.Handler()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		switch {
+		case p == "/" || p == "/index.html" || strings.HasPrefix(p, "/static/"):
+			w.Header().Set("Cache-Control", "no-cache")
+			files.ServeHTTP(w, r)
+			return
+		case strings.HasPrefix(p, "/api/"):
+			s.api(w, r)
+			return
+		case p == "/favicon.ico":
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if dlna != nil {
+			for _, prefix := range dlnaPrefixes {
+				if strings.HasPrefix(p, prefix) {
+					dlna.ServeHTTP(w, r)
+					return
+				}
+			}
+		}
+		s.jellyfin(w, r)
+	})
+}
+
+var reAuthToken = regexp.MustCompile(`(?i)\bToken="?([^",\s]+)"?`)
+
+// token finds the login token wherever the client puts it: the cookie of
+// the web interface, or the headers and query parameter Jellyfin clients use.
+func (s *Server) token(r *http.Request) string {
+	if c, err := r.Cookie("mk_token"); err == nil && c.Value != "" {
+		return c.Value
+	}
+	for _, h := range []string{"X-Emby-Token", "X-MediaBrowser-Token"} {
+		if v := r.Header.Get(h); v != "" {
+			return v
+		}
+	}
+	for _, h := range []string{"Authorization", "X-Emby-Authorization"} {
+		if m := reAuthToken.FindStringSubmatch(r.Header.Get(h)); m != nil {
+			return m[1]
+		}
+	}
+	for key, values := range r.URL.Query() {
+		if strings.EqualFold(key, "api_key") || strings.EqualFold(key, "ApiKey") {
+			return values[0]
+		}
+	}
+	return ""
+}
+
+func (s *Server) user(r *http.Request) *User { return s.auth.ByToken(s.token(r)) }
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+const (
+	loginWindow   = 5 * time.Minute
+	loginAttempts = 10
+)
+
+// login checks a password, refusing addresses that keep guessing.
+func (s *Server) login(r *http.Request, name, password, device string) (*User, string, error) {
+	ip := clientIP(r)
+	s.loginMu.Lock()
+	recent := s.failures[ip][:0]
+	for _, t := range s.failures[ip] {
+		if time.Since(t) < loginWindow {
+			recent = append(recent, t)
+		}
+	}
+	s.failures[ip] = recent
+	blocked := len(recent) >= loginAttempts
+	s.loginMu.Unlock()
+	if blocked {
+		return nil, "", errTooManyLogins
+	}
+	u, token, err := s.auth.Login(name, password, device)
+	if err != nil {
+		s.loginMu.Lock()
+		s.failures[ip] = append(s.failures[ip], time.Now())
+		s.loginMu.Unlock()
+		s.log("failed login as %q from %s", name, ip)
+	}
+	return u, token, err
+}
+
+var errTooManyLogins = errors.New("too many failed attempts, try again in a few minutes")
+
+// imagePath finds the image of a movie, episode, series or season. An
+// episode without a still falls back to its season and series posters.
+func (s *Server) imagePath(cat *Catalog, id, kind string) string {
+	backdrop := kind == "backdrop"
+	if it := cat.items[id]; it != nil {
+		switch {
+		case backdrop && it.Kind == kindMovie:
+			return it.Backdrop
+		case backdrop:
+			return it.Show.Backdrop
+		case it.Kind == kindMovie:
+			return it.Poster
+		case kind == "thumb" || it.Thumb != "":
+			return it.Thumb
+		}
+		return firstNonEmpty(it.Season.Poster, it.Show.Poster)
+	}
+	if season := cat.seasons[id]; season != nil {
+		if backdrop {
+			return season.Show.Backdrop
+		}
+		return firstNonEmpty(season.Poster, season.Show.Poster)
+	}
+	if show := cat.shows[id]; show != nil {
+		if backdrop {
+			return show.Backdrop
+		}
+		return show.Poster
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// serveVideo streams a file as it is, with Range support for seeking.
+func (s *Server) serveVideo(w http.ResponseWriter, r *http.Request, it *CatItem, who string) {
+	f, err := os.Open(it.Path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", mimeOf(it.Path, false))
+	if rng := r.Header.Get("Range"); r.Method == http.MethodGet && (rng == "" || strings.HasPrefix(rng, "bytes=0-")) {
+		s.log("▶ %s (%s)  %s", who, clientIP(r), filepath.Base(it.Path))
+	}
+	http.ServeContent(w, r, "", it.ModTime, f)
+}
+
+// ensureAdmin makes sure somebody can sign in. The administrator comes
+// from MEDIAKEEPER_ADMIN and MEDIAKEEPER_ADMIN_PASSWORD (which also resets
+// a forgotten password); on the very first start a password is generated
+// and shown once.
+func (s *Server) ensureAdmin(ui *UI) error {
+	name := os.Getenv("MEDIAKEEPER_ADMIN")
+	if name == "" {
+		name = "admin"
+	}
+	if password := os.Getenv("MEDIAKEEPER_ADMIN_PASSWORD"); password != "" {
+		_, err := s.auth.SetUser(name, password, true)
+		return err
+	}
+	if s.auth.HasUsers() {
+		return nil
+	}
+	password := randomHex(6)
+	if _, err := s.auth.SetUser(name, password, true); err != nil {
+		return err
+	}
+	ui.Box("Administrator account created", []string{
+		"User:     " + name,
+		"Password: " + password,
+		"",
+		"It is shown only now. Change it in the web interface (Users), or set",
+		"MEDIAKEEPER_ADMIN_PASSWORD to choose your own.",
+	})
+	return nil
+}
+
+// Serve runs the server until the program is interrupted.
+func Serve(ui *UI, o ServerOptions) error {
+	var logMu sync.Mutex
+	logf := func(format string, args ...any) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		ui.Printf("%s "+format+"\n", append([]any{time.Now().Format("15:04:05")}, args...)...)
+	}
+	s, err := NewServer(o, logf)
+	if err != nil {
+		return err
+	}
+	if err := s.ensureAdmin(ui); err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", o.Port))
+	if err != nil {
+		return fmt.Errorf("cannot listen on port %d (try another one with -port): %w", o.Port, err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cat, _ := s.lib.Catalog()
+	episodes := 0
+	for _, show := range cat.Shows {
+		episodes += len(show.Episodes())
+	}
+	ui.Printf("MediaKeeper server %s: %d movie(s), %d series, %d episode(s) from %s\n",
+		ui.Bold(`"`+o.Name+`"`), len(cat.Movies), len(cat.Shows), episodes, o.Root)
+	ifaces := localInterfaces()
+	for _, i := range ifaces {
+		ui.Printf("  http://%s:%d/  (%s)\n", i.ip, o.Port, i.ifi.Name)
+	}
+	ui.Printf("Open the address in a browser, or add it as a server in a Jellyfin app.\n")
+
+	var discovery *ssdpServer
+	if s.dlna != nil {
+		discovery = newSSDP(s.dlna, ifaces)
+		if err := discovery.start(); err != nil {
+			ui.Printf("%s\n", ui.Yellow("DLNA discovery is off ("+err.Error()+"): players will not find the server by themselves."))
+		}
+	}
+	for tool, what := range map[string]string{
+		"ffprobe": "durations and codecs are unknown, clients may refuse to play some files",
+		"ffmpeg":  "the web player cannot convert formats the browser does not play",
+		"aria2c":  "torrents and magnet links cannot be downloaded (plain links still work)",
+	} {
+		if _, err := exec.LookPath(tool); err != nil {
+			ui.Printf("%s\n", ui.Dim(tool+" is not installed: "+what+"."))
+		}
+	}
+	ui.Printf("Press Ctrl+C to stop.\n\n")
+
+	go func() { // watch progress is written out in the background
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(10 * time.Second):
+				s.auth.Save()
+			}
+		}
+	}()
+
+	server := &http.Server{Handler: s.Handler()}
+	failed := make(chan error, 1)
+	go func() { failed <- server.Serve(listener) }()
+	select {
+	case err = <-failed:
+	case <-ctx.Done():
+		ui.Printf("\nStopping…\n")
+	}
+	if discovery != nil {
+		discovery.stop() // tells the players that the server is gone
+	}
+	s.dl.Close()
+	s.hls.stopAll()
+	s.auth.Save()
+	shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	server.Shutdown(shutdown)
+	return err
+}

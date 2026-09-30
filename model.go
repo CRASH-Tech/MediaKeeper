@@ -393,8 +393,8 @@ func httpGet(rawURL string, header map[string]string) ([]byte, *url.URL, error) 
 	}
 }
 
-// Download saves an image to dest via a temporary file.
-func Download(imageURL, dest string) error {
+// DownloadFile saves an image to dest via a temporary file.
+func DownloadFile(imageURL, dest string) error {
 	req, err := http.NewRequest(http.MethodGet, imageURL, nil)
 	if err != nil {
 		return err

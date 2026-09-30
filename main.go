@@ -114,6 +114,7 @@ type App struct {
 	files  []*MediaFile
 
 	yes, dryRun, noTags, refresh bool
+	noJournal                    bool // the source folder is temporary: there is nothing to undo into
 }
 
 // version is set by the release build (-ldflags "-X main.version=...").
@@ -137,8 +138,9 @@ func run(args []string, in io.Reader, out io.Writer) error {
 		fmt.Fprintf(out, "Usage: mediakeeper [options] [directory]\n\n"+
 			"Finds movies and series in the directory (the current one by default),\n"+
 			"identifies them in online catalogues, renames them the Jellyfin way, writes\n"+
-			".nfo files and downloads artwork. With -serve it shares the directory with\n"+
-			"TVs and players on the local network as a DLNA media server.\n\n"+
+			".nfo files and downloads artwork. With -serve it becomes a media server: a\n"+
+			"web interface to browse, watch and download, a Jellyfin-compatible API for\n"+
+			"Jellyfin apps, and DLNA for TVs.\n\n"+
 			"Sources: tmdb, omdb, kinopoisk (need a key), tvmaze, wikidata, imdb,\n"+
 			"letterboxd (no key). Keys: mediakeeper -setup, or the variables TMDB_API_KEY,\n"+
 			"OMDB_API_KEY, KINOPOISK_API_KEY. Settings: %s\n\n", configPath())
@@ -153,9 +155,11 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	refresh := fs.Bool("refresh", false, "identify again even if an .nfo is already there")
 	undo := fs.Bool("undo", false, "revert the last run in this directory (repeat to go further back)")
 	setup := fs.Bool("setup", false, "enter API keys and exit")
-	serve := fs.Bool("serve", false, "run a DLNA media server for the directory instead of organizing it")
-	port := fs.Int("port", 8200, "with -serve: HTTP port of the media server")
-	name := fs.String("name", "", "with -serve: the name players show (default: MediaKeeper on <host>)")
+	serve := fs.Bool("serve", false, "run the server for the directory: web interface, Jellyfin API and DLNA")
+	port := fs.Int("port", 8200, "with -serve: HTTP port of the server")
+	name := fs.String("name", "", "with -serve: the name clients show (default: MediaKeeper on <host>)")
+	dlna := fs.Bool("dlna", true, "with -serve: also be a DLNA media server (no login, the whole local network can watch)")
+	guests := fs.Bool("guests", true, "with -serve: the web interface can be browsed and watched without signing in")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -188,15 +192,6 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	if *undo {
 		return Undo(ui, root)
 	}
-	if *serve {
-		if *name == "" {
-			*name = "MediaKeeper"
-			if host, err := os.Hostname(); err == nil {
-				*name += " on " + host
-			}
-		}
-		return Serve(ui, root, *name, *port)
-	}
 	dest := root
 	if *outDir != "" {
 		if dest, err = filepath.Abs(*outDir); err != nil {
@@ -211,7 +206,7 @@ func run(args []string, in io.Reader, out io.Writer) error {
 			*field = v
 		}
 	}
-	if !hasConfig && !*yes && cfg.TMDBKey+cfg.KinopoiskKey+cfg.OMDbKey == "" {
+	if !hasConfig && !*yes && !*serve && cfg.TMDBKey+cfg.KinopoiskKey+cfg.OMDbKey == "" {
 		if err := askKeys(ui, &cfg); err != nil {
 			return err
 		}
@@ -228,6 +223,15 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	providers, noKey, err := buildProviders(cfg)
 	if err != nil {
 		return err
+	}
+	if *serve {
+		if *name == "" {
+			*name = "MediaKeeper"
+			if host, err := os.Hostname(); err == nil {
+				*name += " on " + host
+			}
+		}
+		return Serve(ui, ServerOptions{Root: root, Name: *name, Port: *port, DLNA: *dlna, Guests: *guests, NoTags: *noTags, Config: cfg})
 	}
 	if len(providers) == 0 {
 		return errors.New("no sources at all: check -sources and the keys (mediakeeper -setup)")

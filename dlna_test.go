@@ -15,6 +15,19 @@ import (
 // dlnaFixture is a library the way MediaKeeper leaves it, plus one file
 // that was never organized.
 func dlnaFixture(t *testing.T) (*DLNAServer, *httptest.Server, string) {
+	root := dlnaLibraryFiles(t)
+	t.Setenv("PATH", "") // no ffprobe: durations come from .nfo
+	s, err := NewDLNAServer(root, "Test & Server", 8200, func(string, ...any) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	return s, srv, root
+}
+
+// dlnaLibraryFiles creates the files of the fixture library.
+func dlnaLibraryFiles(t *testing.T) string {
 	root := t.TempDir()
 	write := func(rel, content string) {
 		path := filepath.Join(root, filepath.FromSlash(rel))
@@ -44,15 +57,7 @@ func dlnaFixture(t *testing.T) (*DLNAServer, *httptest.Server, string) {
 	write(ent+"Season 01/Star Trek - Enterprise S01E01-E02 - Broken Bow-thumb.jpg", "THUMB")
 	write("Some.Unknown.Movie.2019.WEB-DL.avi", "loose")
 	write("notes.txt", "not a video")
-
-	t.Setenv("PATH", "") // no ffprobe: durations come from .nfo
-	s, err := NewDLNAServer(root, "Test & Server", 8200, func(string, ...any) {})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
-	return s, srv, root
+	return root
 }
 
 type didlEntry struct {

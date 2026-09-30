@@ -1,0 +1,708 @@
+"use strict";
+// MediaKeeper web interface: a single page without dependencies. Pages are
+// chosen by the address after "#"; everything is built with DOM calls, so
+// titles and file names can never be read as markup.
+
+const app = document.getElementById("app");
+let me = null;       // the signed-in user
+let library = null;  // {name, movies, shows}
+let pollTimer = null;
+
+// h("div", {class: "x", onclick: f}, child, ...) creates an element.
+function h(tag, attrs, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === false || v == null) continue;
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "style") el.style.cssText = v;
+    else if (k in el && k !== "list") el[k] = v;
+    else el.setAttribute(k, v);
+  }
+  for (const c of children.flat(3)) {
+    if (c == null || c === false) continue;
+    el.append(c.nodeType ? c : document.createTextNode(String(c)));
+  }
+  return el;
+}
+
+async function api(path, options = {}) {
+  if (options.json !== undefined) {
+    options.method = options.method || "POST";
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify(options.json);
+  }
+  const resp = await fetch("/api/" + path, options);
+  const data = await resp.json().catch(() => ({}));
+  if (resp.status === 401 && me) { me = null; render(); }
+  if (!resp.ok) throw new Error(data.error || resp.statusText);
+  return data;
+}
+
+function time(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const hrs = Math.floor(sec / 3600), min = Math.floor(sec / 60) % 60, s = sec % 60;
+  return (hrs ? hrs + ":" + String(min).padStart(2, "0") : min) + ":" + String(s).padStart(2, "0");
+}
+function minutes(sec) {
+  const m = Math.round((sec || 0) / 60);
+  return m >= 60 ? Math.floor(m / 60) + " h " + (m % 60) + " min" : m ? m + " min" : "";
+}
+function bytes(n) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : n) + " " + units[i];
+}
+const image = (id, kind) => `url("/api/image/${id}/${kind}")`;
+const sameText = (a, b) => (a || "").toLowerCase() === (b || "").toLowerCase();
+const fullTitle = x => x.localTitle && !sameText(x.localTitle, x.title) ? `${x.title} / ${x.localTitle}` : x.title;
+
+// ---------------------------------------------------------------- routing
+
+window.addEventListener("hashchange", render);
+
+async function start() {
+  try { me = await api("me"); } catch { me = null; }
+  render();
+}
+
+async function render() {
+  clearInterval(pollTimer);
+  document.querySelectorAll(".modal").forEach(m => m.remove());
+  const [path, query] = (location.hash.slice(1) || "movies").split("?");
+  const [page, arg, ...rest] = path.split("/");
+  // Without an account one may watch (if the server allows it), not manage.
+  if (!me || (page === "login" && me.guest)) return renderLogin();
+  try {
+    if (!library || ["movies", "shows", "movie", "show", "browse"].includes(page)) library = await api("library");
+  } catch (err) {
+    if (!me) return;
+    return shell(page, h("p", { class: "error" }, err.message));
+  }
+  document.title = library.name;
+  switch (page) {
+    case "shows": return renderList("shows", library.shows.map(asShow), query);
+    case "movie": return renderMovie(arg);
+    case "show": return renderShow(arg);
+    case "browse": return renderBrowse(arg, decodeURIComponent(rest.join("/")));
+    case "downloads": return me.admin ? renderDownloads() : (location.hash = "#movies");
+    case "users": return me.admin ? renderUsers() : (location.hash = "#movies");
+    default: return renderList("movies", library.movies, query);
+  }
+}
+
+function shell(page, ...content) {
+  const link = (id, label, extra) => h("a", { href: "#" + id, class: page === id ? "active" : "" }, label, extra);
+  const search = h("input", {
+    type: "search", placeholder: "Search", "aria-label": "Search",
+    oninput: () => {
+      const term = search.value.trim().toLowerCase();
+      for (const card of document.querySelectorAll(".card"))
+        card.classList.toggle("hidden", !!term && !card.dataset.text.includes(term));
+    },
+  });
+  app.replaceChildren(
+    h("header", {},
+      h("a", { class: "brand", href: "#movies" }, library ? library.name : "MediaKeeper"),
+      h("nav", {},
+        link("movies", "Movies"), link("shows", "Shows"),
+        me.admin && link("downloads", "Downloads", h("span", { class: "badge hidden", id: "attention" })),
+        me.admin && link("users", "Users")),
+      h("span", { class: "spacer" }),
+      ["movies", "shows", "browse"].includes(page) && search,
+      me.guest ? h("a", { class: "button small", href: "#login" }, "Sign in") : [
+        h("span", { class: "dim" }, me.name),
+        h("button", { class: "small", onclick: signOut }, "Sign out")]),
+    h("main", {}, ...content));
+  window.scrollTo(0, 0);
+  if (me.admin) refreshBadge();
+}
+
+async function signOut() {
+  await api("logout", { method: "POST" });
+  // Back to watching as a guest where the server allows it, else to the login.
+  try { me = await api("me"); } catch { me = null; }
+  library = null;
+  location.hash = "#movies";
+  render();
+}
+
+async function refreshBadge(list) {
+  try {
+    list = list || await api("downloads");
+    const n = list.filter(d => d.state === "attention").length;
+    const badge = document.getElementById("attention");
+    if (badge) { badge.textContent = n; badge.classList.toggle("hidden", !n); }
+  } catch { /* the badge is not worth an error message */ }
+}
+
+// ------------------------------------------------------------------ login
+
+function renderLogin() {
+  const user = h("input", { type: "text", autocomplete: "username", id: "user" });
+  const pass = h("input", { type: "password", autocomplete: "current-password", id: "pass" });
+  const error = h("p", { class: "error" });
+  document.title = "MediaKeeper";
+  app.replaceChildren(h("form", {
+    class: "login",
+    onsubmit: async e => {
+      e.preventDefault();
+      try {
+        me = await api("login", { json: { username: user.value, password: pass.value } });
+        library = null;
+        if (location.hash === "#login") location.hash = "#movies"; else render();
+      } catch (err) { error.textContent = err.message; }
+    },
+  },
+    h("h1", {}, "MediaKeeper"),
+    h("label", { for: "user" }, "User"), user,
+    h("label", { for: "pass" }, "Password"), pass,
+    h("button", { class: "primary" }, "Sign in"), error,
+    me && me.guest && h("p", {}, h("a", { href: "#movies" }, "← Back to the library"))));
+  user.focus();
+}
+
+// ---------------------------------------------------------------- catalog
+
+const asShow = s => Object.assign(s, { kind: "show" });
+const isShow = x => x.kind === "show";
+const episodesOf = show => show.seasons.flatMap(s => s.episodes);
+
+function progressBar(x) {
+  return x.position > 0 && x.duration > 0 && h("div", { class: "bar" }, h("i", { style: `width:${Math.min(100, x.position / x.duration * 100)}%` }));
+}
+
+function grid(items, emptyText) {
+  if (!items.length) {
+    return h("div", { class: "empty" }, emptyText || "Nothing here yet.",
+      me.admin && !emptyText && h("p", {}, h("a", { href: "#downloads" }, "Download something")));
+  }
+  return h("div", { class: "grid" }, items.map(x => {
+    const watched = isShow(x) ? episodesOf(x).every(e => e.played) : x.played;
+    const card = h("a", { class: "card", href: `#${isShow(x) ? "show" : "movie"}/${x.id}` },
+      h("div", { class: "poster", style: x.poster ? `background-image:${image(x.id, "poster")}` : "" },
+        !x.poster && x.title, watched && h("span", { class: "seen", title: "Watched" }, "✓"), !isShow(x) && progressBar(x)),
+      h("div", { class: "title" }, x.title),
+      h("div", { class: "sub" }, [!sameText(x.localTitle, x.title) && x.localTitle, x.year || null, isShow(x) && "series"].filter(Boolean).join(" · ")));
+    card.dataset.text = `${x.title} ${x.localTitle || ""} ${x.originalTitle || ""} ${x.year || ""}`.toLowerCase();
+    return card;
+  }));
+}
+
+// renderList is the Movies or Shows page: every title, narrowed by the
+// groups chosen above the grid (genre, year, actor...), which are kept in
+// the address: #movies?genre=Action&year=2008.
+function renderList(page, items, query) {
+  const params = new URLSearchParams(query || "");
+  const chosen = Object.keys(facets).filter(f => params.get(f));
+  const shown = items.filter(x => chosen.every(f => (facets[f].values(x) || []).some(v => sameText(v, params.get(f)))));
+  const order = params.get("sort") || "title";
+  const sorters = {
+    title: (a, b) => a.title.localeCompare(b.title),
+    year: (a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title),
+    added: (a, b) => (b.added || 0) - (a.added || 0),
+    rating: (a, b) => (b.rating || 0) - (a.rating || 0),
+  };
+  shown.sort(sorters[order] || sorters.title);
+
+  const go = (key, value) => {
+    const next = new URLSearchParams(params);
+    if (value) next.set(key, value); else next.delete(key);
+    location.hash = "#" + page + (next.toString() ? "?" + next : "");
+  };
+  // Every group that has values, most common first (years newest first),
+  // with how many titles have each.
+  const selects = Object.entries(facets).map(([key, f]) => {
+    const counts = new Map();
+    for (const x of items) for (const v of new Set(f.values(x) || [])) counts.set(v, (counts.get(v) || 0) + 1);
+    if (!counts.size) return null;
+    const values = [...counts.keys()].sort(key === "year" ? (a, b) => b - a : (a, b) => counts.get(b) - counts.get(a) || a.localeCompare(b));
+    const select = h("select", { "aria-label": f.label, class: params.get(key) ? "on" : "", onchange: () => go(key, select.value) },
+      h("option", { value: "" }, f.plural),
+      values.map(v => h("option", { value: v, selected: sameText(v, params.get(key)) }, `${v} (${counts.get(v)})`)));
+    return select;
+  });
+  const sort = h("select", { "aria-label": "Order", class: "sort", onchange: () => go("sort", sort.value === "title" ? "" : sort.value) },
+    [["title", "By title"], ["year", "Newest first"], ["added", "Recently added"], ["rating", "Best rated"]]
+      .map(([v, label]) => h("option", { value: v, selected: v === order }, label)));
+  shell(page,
+    items.length > 0 && h("div", { class: "filters" }, selects, sort,
+      chosen.length > 0 && h("a", { href: "#" + page }, "Clear")),
+    grid(shown, chosen.length ? "No titles match all of these." : undefined));
+}
+
+// The groups a title belongs to. Each value links to everything else in
+// the library that shares it.
+const facets = {
+  genre: { label: "Genre", plural: "All genres", values: x => x.genres },
+  year: { label: "Year", plural: "All years", values: x => x.year ? [String(x.year)] : [] },
+  country: { label: "Country", plural: "All countries", values: x => x.countries },
+  actor: { label: "Actor", plural: "All actors", values: x => (x.cast || []).map(p => p.name) },
+  director: { label: "Director", plural: "All directors", values: x => x.directors },
+  writer: { label: "Writer", plural: "All writers", values: x => x.writers },
+  studio: { label: "Studio", plural: "All studios", values: x => x.studios },
+};
+const browseLink = (facet, value) => `#browse/${facet}/${encodeURIComponent(value)}`;
+const chip = (facet, value, note) => h("a", { class: "chip", href: browseLink(facet, value) }, value, note && h("span", { class: "note" }, note));
+
+function renderBrowse(facet, value) {
+  const f = facets[facet];
+  if (!f) return (location.hash = "#movies");
+  const all = [...library.movies, ...library.shows.map(asShow)];
+  const found = all.filter(x => (f.values(x) || []).some(v => sameText(v, value)));
+  shell("browse",
+    h("p", { class: "crumbs" }, h("a", { href: "#movies" }, "Library"), " › ", f.label),
+    h("h1", {}, value),
+    h("p", { class: "dim" }, `${found.length} title(s) in the library`),
+    grid(found, "Nothing in the library matches any more."));
+}
+
+// section("Cast", content) is one titled group of the details; empty groups are left out.
+function section(label, ...content) {
+  content = content.flat().filter(Boolean);
+  return content.length > 0 && h("section", { class: "info-group" }, h("h2", {}, label), h("div", { class: "body" }, content));
+}
+const chips = (facet, values) => (values || []).length > 0 && h("div", { class: "chips" }, values.map(v => chip(facet, v)));
+
+function details(x, extraFacts) {
+  const facts = [
+    x.originalTitle && !sameText(x.originalTitle, x.title) && ["Original title", x.originalTitle],
+    x.localTitle && !sameText(x.localTitle, x.title) && ["Russian title", x.localTitle],
+    x.date && [isShow(x) ? "First aired" : "Released", x.date],
+    x.status && ["Status", x.status],
+    x.mpaa && ["Age rating", x.mpaa],
+    x.imdb && ["IMDb", h("a", { href: `https://www.imdb.com/title/${x.imdb}/`, target: "_blank", rel: "noopener" }, x.imdb)],
+    ...(extraFacts || []),
+  ].filter(Boolean);
+  return [
+    section("Plot", x.plot && h("p", { class: "plot" }, x.plot)),
+    section("Genres", chips("genre", x.genres)),
+    section("Directed by", chips("director", x.directors)),
+    section("Written by", chips("writer", x.writers)),
+    section("Cast", (x.cast || []).length > 0 && h("div", { class: "chips" }, x.cast.map(p => chip("actor", p.name, p.role)))),
+    section("Studio", chips("studio", x.studios)),
+    section("Country", chips("country", x.countries)),
+    section("Details", facts.length > 0 && h("dl", { class: "facts" }, facts.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]))),
+  ];
+}
+
+function hero(x, ...rest) {
+  const meta = [
+    x.year && h("a", { href: browseLink("year", x.year) }, x.year),
+    !isShow(x) && minutes(x.duration),
+    isShow(x) && `${x.seasons.length} season(s), ${episodesOf(x).length} episode(s)`,
+    x.rating > 0 && "★ " + x.rating,
+    x.mpaa,
+  ].filter(Boolean);
+  return h("div", { class: "hero", style: x.backdrop ? `background-image:${image(x.id, "backdrop")}` : "" },
+    fixButton(x),
+    h("div", { class: "inner" },
+      x.poster && h("img", { class: "poster", src: `/api/image/${x.id}/poster`, alt: "" }),
+      h("div", { class: "info" },
+        h("h1", {}, fullTitle(x)),
+        x.tagline && h("p", { class: "tagline" }, x.tagline),
+        h("div", { class: "meta" }, meta.map((m, i) => [i > 0 && " · ", m])),
+        ...rest)));
+}
+
+function playLabel(x) {
+  return x.position > 0 ? `Resume from ${time(x.position)}` : "Play";
+}
+
+async function toggleWatched(item) {
+  await api("progress/" + item.id, { json: { played: !item.played } });
+  render();
+}
+
+// A quiet button in the corner of the title: rarely needed, only for administrators.
+const fixButton = x => me.admin && h("button", { class: "edit", title: "Identified wrongly? Choose what this really is", onclick: () => openFix(x) }, "✎ Edit");
+
+function renderMovie(id) {
+  const m = library.movies.find(x => x.id === id);
+  if (!m) return shell("movies", h("div", { class: "empty" }, "This movie is not in the library any more."));
+  const file = h("dd", {}, "…");
+  shell("movies",
+    hero(m, h("div", { class: "actions" },
+      h("button", { class: "primary", onclick: () => play(m) }, playLabel(m)),
+      m.position > 0 && h("button", { onclick: () => play(m, 0) }, "From the beginning"),
+      !me.guest && h("button", { onclick: () => toggleWatched(m) }, m.played ? "Mark as not watched" : "Mark as watched"),
+      h("a", { class: "button", href: `/api/stream/${m.id}`, download: "" }, "Download the file"))),
+    h("div", { class: "details" }, details(m, [["File", file]])));
+  // What is inside the file comes with a separate request.
+  api("item/" + id).then(info => {
+    const audio = (info.audio || []).map(a => [a.language, a.codec, a.channels && a.channels + "ch"].filter(Boolean).join(" ")).join(", ");
+    file.replaceChildren([info.file, bytes(info.size), info.video, audio && "audio: " + audio].filter(Boolean).join(" · "));
+  }).catch(() => file.replaceChildren("—"));
+}
+
+let openSeason = {}; // show id -> the season tab that is open
+
+function renderShow(id) {
+  const show = library.shows.map(asShow).find(x => x.id === id);
+  if (!show) return shell("shows", h("div", { class: "empty" }, "This show is not in the library any more."));
+  const episodes = episodesOf(show);
+  // Continue where the viewer is: an episode in progress, else the first not watched.
+  const next = episodes.find(e => e.position > 0) || episodes.find(e => !e.played) || episodes[0];
+  const current = show.seasons.find(s => s.number === openSeason[id]) || show.seasons.find(s => s.episodes.includes(next)) || show.seasons[0];
+  const label = e => `S${e.season}E${e.episode}${e.episodeEnd > e.episode ? "-" + e.episodeEnd : ""}`;
+  shell("shows",
+    hero(show, h("div", { class: "actions" },
+      next && h("button", { class: "primary", onclick: () => play(next, undefined, episodes) }, `${playLabel(next)} · ${label(next)}`),
+    )),
+    h("div", { class: "tabs" }, show.seasons.map(s => h("button", {
+      class: s === current ? "active" : "",
+      onclick: () => { openSeason[id] = s.number; renderShow(id); },
+    }, s.number ? `Season ${s.number}` : "Specials"))),
+    current.episodes.map(e => h("div", { class: "episode", onclick: () => play(e, undefined, episodes) },
+      h("div", { class: "thumb", style: `background-image:${image(e.id, "poster")}` },
+        e.played && h("span", { class: "seen", title: "Watched" }, "✓"), progressBar(e)),
+      h("div", { class: "body" },
+        h("div", { class: "name" }, `${e.episode}${e.episodeEnd > e.episode ? "–" + e.episodeEnd : ""}. ${e.title}`),
+        h("div", { class: "dim" }, [e.date, minutes(e.duration)].filter(Boolean).join(" · ")),
+        h("div", { class: "plot" }, e.plot)),
+      !me.guest && h("button", { class: "small", onclick: ev => { ev.stopPropagation(); toggleWatched(e); } }, e.played ? "Unwatch" : "Watched"))),
+    h("div", { class: "details" }, details(show)));
+}
+
+// --------------------------------------------------- choosing what it is
+
+// identifyForm lets an administrator say what a movie or a series is:
+// candidates from all sources, a search by another title, or an ID. It is
+// used for downloads the program could not identify and for titles of the
+// library it identified wrongly.
+//   unit:    {kind, title, year, files}
+//   search:  query -> Promise of candidates
+//   resolve: request body -> Promise
+//   st:      the form's state, kept by the caller across redraws
+function identifyForm({ unit, search, resolve, st, extra }) {
+  Object.assign(st, { query: "", picked: null, candidates: null, asMovie: true, season: 1, episode: 1, ref: "", ...st });
+  const holder = h("div", {});
+  const error = h("p", { class: "error" });
+  const pickedSeries = () => st.picked && st.picked.kind === "tv" && unit.kind === "movie";
+  const submit = async body => {
+    error.textContent = "";
+    holder.classList.add("busy");
+    try { await resolve(body); } catch (err) { error.textContent = err.message; }
+    holder.classList.remove("busy");
+  };
+
+  async function find() {
+    holder.replaceChildren(h("p", { class: "dim" }, "Searching…"));
+    try { st.candidates = await search(st.query); }
+    catch (err) { st.candidates = []; error.textContent = err.message; }
+    show();
+  }
+  function show() {
+    const groups = [];
+    let last = "";
+    for (const c of st.candidates || []) {
+      if (c.sourceName !== last) groups.push(h("div", { class: "group" }, last = c.sourceName));
+      groups.push(h("button", {
+        type: "button", class: st.picked === c ? "picked" : "",
+        onclick: () => { st.picked = c; show(); },
+      }, c.title, c.year ? ` (${c.year})` : "", c.originalTitle && c.originalTitle !== c.title ? ` — ${c.originalTitle}` : "",
+        c.kind === "tv" && h("span", { class: "tag" }, "series")));
+    }
+    const season = h("input", { type: "text", size: 3, value: st.season, "aria-label": "Season", oninput: () => st.season = +season.value });
+    const episode = h("input", { type: "text", size: 3, value: st.episode, "aria-label": "Episode", oninput: () => st.episode = +episode.value });
+    const asMovie = h("select", { "aria-label": "What the file is", onchange: () => { st.asMovie = asMovie.value === "movie"; show(); } },
+      h("option", { value: "movie", selected: st.asMovie }, "The file is the whole series — keep it as a movie"),
+      h("option", { value: "episode", selected: !st.asMovie }, "The file is one episode"));
+    holder.replaceChildren(...[
+      h("div", { class: "candidates" }, groups.length ? groups : h("p", { class: "dim" }, "Nothing found. Try another title or paste an ID.")),
+      pickedSeries() && h("div", { class: "row" }, asMovie, !st.asMovie && ["Season", season, "Episode", episode]),
+      h("div", { class: "row", style: "margin-top:10px" },
+        h("button", {
+          type: "button", class: "primary", disabled: !st.picked,
+          onclick: () => submit({ source: st.picked.source, id: st.picked.id, kind: st.picked.kind,
+            asMovie: pickedSeries() && st.asMovie, season: st.season, episode: pickedSeries() && !st.asMovie ? st.episode : 0 }),
+        }, "This is it")),
+    ].filter(Boolean));
+  }
+
+  const query = h("input", { type: "text", class: "grow", placeholder: "Another title; a year helps: Форсаж 2026", value: st.query, "aria-label": "Title",
+    oninput: () => st.query = query.value, onkeydown: e => { if (e.key === "Enter") { e.preventDefault(); find(); } } });
+  const ref = h("input", { type: "text", class: "grow", placeholder: "tt0371746, tmdb:1726, kp:61237 or a link to IMDb, TMDB, Kinopoisk, Letterboxd, TVMaze", value: st.ref,
+    "aria-label": "ID or link", oninput: () => st.ref = ref.value });
+  if (st.candidates) show(); else find();
+  return h("div", { class: "unit" },
+    h("div", {}, h("b", {}, unit.kind === "tv" ? "Series: " : "Movie: "), unit.title || "?", unit.year ? ` (${unit.year})` : ""),
+    unit.files && h("div", { class: "files" }, unit.files.join(", ")),
+    h("div", { class: "row", style: "margin-top:10px" }, query, h("button", { type: "button", onclick: find }, "Search")),
+    holder,
+    h("div", { class: "row", style: "margin-top:10px" }, ref,
+      h("button", { type: "button", onclick: () => st.ref.trim() && submit({ ref: st.ref, asMovie: unit.kind === "movie" }) }, "Set by ID"),
+      extra),
+    error);
+}
+
+// openFix shows the form over the page for a title that is in the library
+// under a wrong name.
+function openFix(x) {
+  const close = () => box.remove();
+  const unit = { kind: isShow(x) ? "tv" : "movie", title: x.title, year: x.year };
+  const box = h("div", { class: "modal", onclick: e => { if (e.target === box) close(); } },
+    h("div", { class: "panel" },
+      h("div", { class: "row" }, h("h2", { class: "grow", style: "margin:0" }, "What is it really?"), h("button", { class: "small", onclick: close }, "Close")),
+      h("p", { class: "dim" }, "The files are renamed and moved as for a new title, and the description and artwork are replaced."),
+      identifyForm({
+        unit, st: {},
+        search: q => api(`fix/${x.id}/search?q=${encodeURIComponent(q)}`),
+        resolve: async body => {
+          await api(`fix/${x.id}`, { json: body });
+          library = null;
+          close();
+          // The title has a new address now: back to the list it is in.
+          location.hash = isShow(x) ? "#shows" : "#movies";
+          render();
+        },
+      })));
+  document.body.append(box);
+}
+
+// ----------------------------------------------------------------- player
+
+// play opens the player. Files the browser understands are played as they
+// are; others are converted by the server on the fly. A converted stream
+// has no fixed length, so seeking asks the server for a new one from that
+// moment, and the position is the start of the stream plus its own clock.
+// Safari takes the converted video as HLS, the only streamed form it plays
+// without downloading everything first; other browsers take a plain stream.
+async function play(item, startAt, queue) {
+  let info;
+  try { info = await api("item/" + item.id); } catch (err) { return alert(err.message); }
+  const duration = info.duration;
+  let converted = false, offset = 0, audio = 0, closed = false, session = null;
+
+  const video = h("video", { controls: true, autoplay: true, playsInline: true });
+  const nativeHLS = !!video.canPlayType("application/vnd.apple.mpegurl");
+  const note = h("div", { class: "note hidden" });
+  const slider = h("input", { type: "range", min: 0, max: Math.max(1, Math.floor(duration)), step: 1, "aria-label": "Seek" });
+  const clock = h("span", {});
+  const seek = h("div", { class: "seek hidden" }, slider, clock);
+  const audioSelect = (info.audio || []).length > 1 && h("select", {
+    "aria-label": "Audio track",
+    onchange: () => { audio = +audioSelect.value; convert(position()); },
+  }, info.audio.map((a, i) => h("option", { value: i }, `Audio ${i + 1}: ${[a.title, a.language, a.codec].filter(Boolean).join(", ")}`)));
+  const mode = h("button", { onclick: () => converted ? direct(position()) : convert(position()) });
+  const box = h("div", { class: "player" },
+    h("div", { class: "top" },
+      h("button", { onclick: close }, "← Back"),
+      h("span", { class: "name" }, item.show ? `${item.show} · S${item.season}E${item.episode} · ${item.title}` : fullTitle(item)),
+      audioSelect, info.canTranscode && mode),
+    note, video, seek);
+
+  const position = () => (converted ? offset : 0) + (video.currentTime || 0);
+  const say = text => { note.textContent = text || ""; note.classList.toggle("hidden", !text); };
+  const endSession = () => {
+    if (session) api("hls/s/" + session, { method: "DELETE" }).catch(() => {});
+    session = null;
+  };
+
+  function subtitles(shift) {
+    video.querySelectorAll("track").forEach(t => t.remove());
+    for (let i = 0; i < info.subtitles; i++)
+      video.append(h("track", { kind: "subtitles", label: `Subtitles ${i + 1}`, src: `/api/subs/${info.id}/${i}.vtt?offset=${shift}`, default: i === 0 }));
+  }
+  function direct(at) {
+    endSession();
+    converted = false; offset = 0; say("");
+    mode.textContent = "Does not play? Convert";
+    seek.classList.add("hidden");
+    video.src = `/api/stream/${info.id}`;
+    video.addEventListener("loadedmetadata", () => { if (at > 0) video.currentTime = at; }, { once: true });
+    subtitles(0);
+  }
+  async function convert(at) {
+    if (!info.canTranscode) return say("The browser cannot play this file, and the server has no ffmpeg to convert it. Download the file and open it in a player.");
+    endSession();
+    converted = true; offset = Math.max(0, Math.floor(at || 0));
+    mode.textContent = "Play the original";
+    say("");
+    seek.classList.remove("hidden");
+    slider.value = offset;
+    if (nativeHLS) {
+      try {
+        const started = await api(`hls/start/${info.id}`, { json: { start: offset, audio } });
+        if (closed) return api("hls/s/" + started.id, { method: "DELETE" }).catch(() => {});
+        session = started.id;
+        video.src = started.url;
+      } catch (err) { return say(err.message); }
+    } else {
+      video.src = `/api/transcode/${info.id}?start=${offset}&audio=${audio}`;
+    }
+    subtitles(offset);
+    video.play().catch(() => {});
+  }
+  video.addEventListener("error", () => {
+    if (closed || !video.error) return;
+    if (!converted) convert(position() || startPosition);
+    else recover();
+  });
+
+  // A converted stream that stops moving while it should play (a network
+  // hiccup, a session the server ended) is started again from where it
+  // stopped. Several failures in a row are reported instead.
+  let restarts = 0, lastTime = -1, stuckSince = 0;
+  function recover() {
+    if (restarts++ >= 3) return say("Playback keeps stopping: the server may be busy. Try again later, or download the file.");
+    convert(position());
+  }
+  const watchdog = setInterval(() => {
+    if (!converted || video.paused || video.ended || closed) { stuckSince = 0; return; }
+    if (video.currentTime !== lastTime) {
+      if (video.currentTime > lastTime + 30) restarts = 0; // playing well again
+      lastTime = video.currentTime;
+      stuckSince = 0;
+      return;
+    }
+    if (!stuckSince) stuckSince = Date.now();
+    else if (Date.now() - stuckSince > 20000) { stuckSince = 0; lastTime = -1; recover(); }
+  }, 2000);
+  video.addEventListener("timeupdate", () => {
+    if (!slider.matches(":active")) slider.value = position();
+    clock.textContent = `${time(position())} / ${time(duration)}`;
+  });
+  slider.addEventListener("change", () => convert(+slider.value));
+  video.addEventListener("ended", async () => {
+    await report(duration);
+    const i = queue ? queue.findIndex(e => e.id === item.id) : -1;
+    close();
+    if (i >= 0 && queue[i + 1]) play(queue[i + 1], 0, queue);
+  });
+
+  let lastReport = 0;
+  async function report(at) {
+    lastReport = Date.now();
+    if (me.guest) return; // nothing is remembered without an account
+    try { await api("progress/" + info.id, { json: { position: at } }); } catch { /* next time */ }
+  }
+  const ticker = setInterval(() => { if (!video.paused && Date.now() - lastReport > 9000) report(position()); }, 2000);
+  video.addEventListener("pause", () => report(position()));
+
+  function close() {
+    if (closed) return;
+    closed = true;
+    clearInterval(ticker);
+    clearInterval(watchdog);
+    const at = position();
+    video.pause(); video.removeAttribute("src"); video.load(); // stops the download and the conversion
+    endSession();
+    box.remove();
+    document.removeEventListener("keydown", onKey);
+    (at > 0 ? report(at) : Promise.resolve()).then(render);
+  }
+  const onKey = e => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+
+  const startPosition = startAt !== undefined ? startAt : (info.position || 0);
+  document.body.append(box);
+  // Start converted right away when the server knows the browser cannot play the file.
+  if (info.direct === false) convert(startPosition); else direct(startPosition);
+}
+
+// -------------------------------------------------------------- downloads
+
+const stateNames = { downloading: "Downloading", organizing: "Organizing", attention: "Needs you", done: "In the library", error: "Failed" };
+
+async function renderDownloads() {
+  const source = h("input", { type: "text", class: "grow", placeholder: "magnet:?xt=…  or  https://…/file.mkv  or  https://…/file.torrent", "aria-label": "Link" });
+  const file = h("input", { type: "file", accept: ".torrent,application/x-bittorrent", "aria-label": "Torrent file" });
+  const error = h("p", { class: "error" });
+  const list = h("div", {});
+  const open = {}; // unit key -> the state of its form, kept across refreshes
+
+  async function add(e) {
+    e.preventDefault();
+    error.textContent = "";
+    try {
+      let result;
+      if (file.files.length) {
+        const form = new FormData();
+        form.append("torrent", file.files[0]);
+        result = await api("downloads", { method: "POST", body: form });
+      } else if (source.value.trim()) {
+        result = await api("downloads", { json: { source: source.value } });
+      } else return;
+      source.value = ""; file.value = "";
+      draw(result, true);
+    } catch (err) { error.textContent = err.message; }
+  }
+
+  // The periodic refresh does not redraw while the administrator is typing
+  // in one of the forms; the answer to an action of theirs always does.
+  function draw(downloads, force) {
+    refreshBadge(downloads);
+    if (!force && list.contains(document.activeElement) && ["INPUT", "SELECT"].includes(document.activeElement.tagName)) return;
+    list.replaceChildren(...(downloads.length ? downloads.map(card) : [h("div", { class: "empty" }, "Nothing has been downloaded yet.")]));
+  }
+
+  function card(d) {
+    const act = async (path, options) => { draw(await api(`downloads/${d.id}${path}`, options), true); library = null; };
+    const alerting = (path, options) => act(path, options).catch(err => alert(err.message));
+    return h("div", { class: "panel download" },
+      h("div", { class: "head" },
+        h("span", { class: "name" }, d.name),
+        h("span", { class: "state " + d.state }, stateNames[d.state] || d.state),
+        h("button", { class: "small danger", onclick: () => confirm(d.state === "downloading" ? "Stop this download?" : "Remove this entry?") && alerting("", { method: "DELETE" }) },
+          d.state === "downloading" ? "Stop" : "Remove")),
+      d.state === "downloading" && [
+        h("progress", { value: d.done, max: d.total || 1 }),
+        h("div", { class: "dim" }, d.total ? `${bytes(d.done)} of ${bytes(d.total)} · ${bytes(d.speed)}/s` : "Connecting…")],
+      d.error && h("p", { class: "error" }, d.error),
+      d.log && h("pre", { class: "log" }, d.log),
+      (d.pending || []).map(u => identifyForm({
+        unit: u, st: open[d.id + "/" + u.key] = open[d.id + "/" + u.key] || {},
+        search: q => api(`downloads/${d.id}/search?key=${encodeURIComponent(u.key)}&q=${encodeURIComponent(q)}`),
+        resolve: body => act("/resolve", { json: { key: u.key, ...body } }),
+        extra: h("button", { type: "button", class: "danger", onclick: () => confirm("Delete these files?") && alerting("/discard", { json: { key: u.key } }) }, "Delete the files"),
+      })));
+  }
+
+  shell("downloads",
+    h("form", { class: "panel form", onsubmit: add },
+      h("div", { class: "row" }, source, h("button", { class: "primary" }, "Download")),
+      h("div", { class: "row", style: "margin-top:10px" }, h("span", { class: "dim" }, "or a .torrent file:"), file),
+      h("p", { class: "dim", style: "margin-bottom:0" }, "After downloading, the file is identified, renamed and put into Movies or Shows. If the program is not sure, it asks here."),
+      error),
+    list);
+  const refresh = async () => { try { draw(await api("downloads")); } catch { /* shown on the next tick */ } };
+  await refresh();
+  pollTimer = setInterval(refresh, 2000);
+}
+
+// ------------------------------------------------------------------ users
+
+async function renderUsers() {
+  const error = h("p", { class: "error" });
+  const name = h("input", { type: "text", placeholder: "Name", "aria-label": "Name", autocomplete: "off" });
+  const pass = h("input", { type: "password", placeholder: "Password", "aria-label": "Password", autocomplete: "new-password" });
+  const admin = h("input", { type: "checkbox", id: "admin" });
+  const save = async body => {
+    error.textContent = "";
+    try { await api("users", { json: body }); renderUsers(); } catch (err) { error.textContent = err.message; }
+  };
+  let users = [];
+  try { users = await api("users"); } catch (err) { error.textContent = err.message; }
+  shell("users",
+    h("div", { class: "panel" },
+      h("table", {},
+        h("tr", {}, h("th", {}, "User"), h("th", {}, "Role"), h("th", {})),
+        users.map(u => h("tr", {},
+          h("td", {}, u.name, u.id === me.id && h("span", { class: "dim" }, " (you)")),
+          h("td", {}, u.admin ? "Administrator: downloads and manages" : "Viewer: watches only"),
+          h("td", {}, h("div", { class: "row" },
+            h("button", { class: "small", onclick: () => { const p = prompt(`New password for ${u.name}`); if (p) save({ name: u.name, password: p, admin: u.admin }); } }, "Change password"),
+            u.id !== me.id && h("button", { class: "small", onclick: () => save({ name: u.name, password: "", admin: !u.admin }) }, u.admin ? "Make a viewer" : "Make an administrator"),
+            u.id !== me.id && h("button", {
+              class: "small danger",
+              onclick: async () => { if (confirm(`Delete ${u.name}?`)) { try { await api("users/" + u.id, { method: "DELETE" }); renderUsers(); } catch (err) { error.textContent = err.message; } } },
+            }, "Delete"))))))),
+    h("form", { class: "panel", onsubmit: e => { e.preventDefault(); save({ name: name.value, password: pass.value, admin: admin.checked }); } },
+      h("h2", { style: "margin-top:0" }, "Add a user"),
+      h("div", { class: "row" }, name, pass, h("label", { for: "admin" }, admin, " administrator"), h("button", { class: "primary" }, "Add")),
+      h("p", { class: "dim", style: "margin-bottom:0" }, "The same name and password work in Jellyfin apps: add this server's address there."),
+      error));
+}
+
+start();

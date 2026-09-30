@@ -325,6 +325,9 @@ func (a *App) PrintPlan(p *Plan) (moves int) {
 func (a *App) Apply(p *Plan) {
 	ui := a.ui
 	j := NewJournal(a.root)
+	if a.noJournal {
+		j.path = ""
+	}
 	srcDirs := map[string]bool{}
 	noTool := false
 	warn := func(err error) {
@@ -360,7 +363,7 @@ func (a *App) Apply(p *Plan) {
 			if _, err := os.Stat(img.Dst); err == nil {
 				continue
 			}
-			if err := Download(img.URL, img.Dst); err != nil {
+			if err := DownloadFile(img.URL, img.Dst); err != nil {
 				warn(fmt.Errorf("%s: %v", filepath.Base(img.Dst), err))
 				continue
 			}
@@ -384,7 +387,7 @@ func (a *App) Apply(p *Plan) {
 		ui.Printf("\n%s\n", ui.Yellow("Tags were not written into the files: mkvpropedit and ffmpeg are not installed.\n"+
 			"Install them (sudo apt install mkvtoolnix ffmpeg) and run the program again."))
 	}
-	if !j.empty() {
+	if !j.empty() && !a.noJournal {
 		ui.Printf("\n%s\n", ui.Dim("To revert everything: mediakeeper -undo "+a.root))
 	}
 }

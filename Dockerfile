@@ -7,13 +7,15 @@ ARG TARGETOS TARGETARCH
 ARG VERSION=dev
 WORKDIR /src
 COPY go.* *.go ./
+COPY web ./web
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o /mediakeeper .
 
 FROM alpine:3
-# ffmpeg (with ffprobe) and mkvtoolnix: tags inside the files and durations
-# for the DLNA server. ca-certificates: HTTPS to the catalogues.
-RUN apk add --no-cache ca-certificates ffmpeg mkvtoolnix tzdata
+# ffmpeg (with ffprobe) and mkvtoolnix: tags inside the files, durations and
+# codecs for the clients, conversion for the web player. aria2: torrents and
+# magnet links. ca-certificates: HTTPS to the catalogues.
+RUN apk add --no-cache aria2 ca-certificates ffmpeg mkvtoolnix tzdata
 COPY --from=build /mediakeeper /usr/local/bin/mediakeeper
 
 # Settings (API keys) live in /config, the library in /media.
