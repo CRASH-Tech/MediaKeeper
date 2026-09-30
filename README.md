@@ -284,6 +284,3 @@ go build -o mediakeeper .
 go test .
 docker build -t mediakeeper .
 ```
-
-Pushing a tag like `v1.2.3` makes GitHub Actions publish a release with the
-binaries and the image `OWNER/mediakeeper:1.2.3` (also `1.2` and `latest`) on Docker Hub. The workflow needs the repository variable `DOCKERHUB_USERNAME` and the secret `DOCKERHUB_TOKEN`.
