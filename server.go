@@ -45,9 +45,9 @@ type Server struct {
 
 	transcodes  chan struct{} // limits simultaneous ffmpeg processes
 	conversions viewerStreams // the converted streams each viewer has open
-	hls        *hlsManager
-	screens    *screenMaker
-	organizing sync.Mutex // one change of the library at a time
+	hls         *hlsManager
+	screens     *screenMaker
+	organizing  sync.Mutex // one change of the library at a time
 
 	loginMu  sync.Mutex
 	failures map[string][]time.Time // failed logins by address
