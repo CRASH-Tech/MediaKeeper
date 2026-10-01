@@ -151,8 +151,8 @@ line, and a folder given by its path alone keeps the kind written there.
   last run in each of them.
 - The server shows all folders together. New downloads go to the first
   folder of their kind (or the first holding both).
-- **The first folder is special:** the downloads in progress and the
-  screenshots are kept in it, and its titles keep the identifiers — and the
+- **The first folder is special:** the downloads in progress and (unless
+  [chosen otherwise](#settings-file)) the screenshots are kept in it, and its titles keep the identifiers — and the
   watch progress — they had when it was the only one. Add new folders after
   it. On the command line the folders given by their paths come first, then
   `-movies` and `-shows`, so `-serve /media -movies /mnt/disk2` keeps
@@ -521,6 +521,7 @@ current directory.
 | `-lang CODE`    | Language of TMDB titles and descriptions, e.g. `ru-RU` (default `en-US`) |
 | `-setup`        | Enter API keys and exit                                                 |
 | `-debug`        | With `-serve`: log every request of the Jellyfin apps, and in full (device profiles, answers, video ranges; no tokens) in `jellyfin-debug.log` next to the settings |
+| `-cache DIR`    | With `-serve`: the folder of screenshots and episode stills (default: `.cache` in the first library folder) |
 | `-db FILE`      | With `-serve`: the database of accounts, ratings, watchlists and history (default: `mediakeeper.db` next to the settings) |
 | `-config FILE`  | The settings file, or a folder for `config.yaml` in it (default: next to the program) |
 | `-serve`        | Run the media server for the folders instead of organizing them         |
@@ -571,7 +572,22 @@ server:              # mediakeeper -serve
   guests: true       # the web interface can be watched without signing in
   no_tags: false     # do not write tags into the files of downloads
   database: /var/lib/mediakeeper/mediakeeper.db   # mediakeeper.db next to this file by default
+  cache: /var/cache/mediakeeper                    # .cache in the first library folder by default
 ```
+
+Where things are kept can be chosen three ways; the command line wins over
+the environment, the environment over the settings file. Relative paths in
+the settings file are relative to its folder.
+
+| What | Flag | Environment variable | Setting | Default |
+|---|---|---|---|---|
+| the settings file | `-config` | `MEDIAKEEPER_CONFIG` | — (it is the file) | `config.yaml` next to the program |
+| the database | `-db` | `MEDIAKEEPER_DB` | `server.database` | `mediakeeper.db` next to the settings |
+| screenshots and episode stills | `-cache` | `MEDIAKEEPER_CACHE` | `server.cache` | `.cache` in the first library folder |
+
+The settings file and the database can be given as a folder too
+(`config.yaml`, `mediakeeper.db` in it). Moving the cache is harmless: the
+images are simply taken again.
 
 `tmdb_api_url` and `tmdb_image_url` point MediaKeeper at a mirror where TMDB
 itself is not reachable; a proxy from `HTTPS_PROXY` is honoured as well.
@@ -588,6 +604,8 @@ copying the file.
 ## Building from source
 
 Go 1.24 or newer; no C compiler is needed (SQLite comes as a pure Go package).
+How the program is put together is described in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```sh
 go build -o mediakeeper .      # the web interface (web/) is embedded into the binary

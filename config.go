@@ -33,6 +33,7 @@ type Config struct {
 type ServerConfig struct {
 	Name     string `yaml:"name,omitempty"`
 	Database string `yaml:"database,omitempty"` // the SQLite file of accounts and watch states
+	Cache    string `yaml:"cache,omitempty"`    // the folder of screenshots and episode stills
 	Port     int    `yaml:"port,omitempty"`
 	DLNA     *bool  `yaml:"dlna,omitempty"`
 	Guests   *bool  `yaml:"guests,omitempty"`
@@ -104,22 +105,47 @@ func findConfig(move bool) string {
 	return own
 }
 
+// chosenPath is a path the user chose: on the command line, else in the
+// environment variable — both relative to the working directory — else in
+// the settings file, relative to the file's own folder. "" when none chose.
+func chosenPath(flag, env, setting string) string {
+	base := ""
+	path := firstNonEmpty(flag, os.Getenv(env))
+	if path == "" && setting != "" {
+		path, base = setting, filepath.Dir(configLocation())
+	}
+	if path == "" {
+		return ""
+	}
+	path = expandHome(path)
+	if !filepath.IsAbs(path) && base != "" {
+		path = filepath.Join(base, path)
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return path
+}
+
 // databasePath is the SQLite file of the server: given with -db, else in
 // MEDIAKEEPER_DB, else in the settings, else mediakeeper.db next to the
 // settings file. A folder means mediakeeper.db in it.
 func databasePath(flag, setting string) string {
-	path := firstNonEmpty(flag, os.Getenv("MEDIAKEEPER_DB"), setting)
+	path := chosenPath(flag, "MEDIAKEEPER_DB", setting)
 	if path == "" {
 		return filepath.Join(filepath.Dir(configPath()), "mediakeeper.db")
 	}
-	abs, err := filepath.Abs(expandHome(path))
-	if err != nil {
-		abs = path
+	if st, err := os.Stat(path); err == nil && st.IsDir() {
+		path = filepath.Join(path, "mediakeeper.db")
 	}
-	if st, err := os.Stat(abs); err == nil && st.IsDir() {
-		abs = filepath.Join(abs, "mediakeeper.db")
-	}
-	return abs
+	return path
+}
+
+// cachePath is the folder of generated images (screenshots, episode
+// stills): given with -cache, else in MEDIAKEEPER_CACHE, else in the
+// settings, else "" — .cache in the first library folder.
+func cachePath(flag, setting string) string {
+	return chosenPath(flag, "MEDIAKEEPER_CACHE", setting)
 }
 
 // legacyConfigDir is the user's configuration folder for MediaKeeper.
@@ -259,7 +285,10 @@ func saveConfig(c Config) error {
 			fmt.Fprintf(&b, "# %s: %s\n", key, example)
 		}
 	}
-	b.WriteString("# MediaKeeper settings. Every setting is optional; command-line flags win.\n")
+	b.WriteString("# MediaKeeper settings. Every setting is optional; command-line flags win.\n" +
+		"#\n# This file is found next to the program unless another one is given with\n" +
+		"# -config or the environment variable MEDIAKEEPER_CONFIG (a file, or a folder\n" +
+		"# for config.yaml in it). Paths in it may be relative to this file's folder.\n")
 	line("TMDB: the richest data, titles in any language. https://www.themoviedb.org/settings/api",
 		"tmdb_api_key", c.TMDBKey, c.TMDBKey != "", `""`)
 	line("OMDb: IMDb data, in English. https://www.omdbapi.com/apikey.aspx",
@@ -306,8 +335,12 @@ func saveConfig(c Config) error {
 	sub("Also be a DLNA server (it has no login: the whole local network can watch).", "dlna", s.DLNA, s.DLNA != nil, "true")
 	sub("Let the web interface be watched without signing in.", "guests", s.Guests, s.Guests != nil, "true")
 	sub("Do not write tags into the files of downloads.", "no_tags", s.NoTags, s.NoTags, "false")
-	sub("The database of accounts, ratings, watchlists and history; mediakeeper.db next to this file by default.",
+	sub("The database of accounts, ratings, watchlists and history (a file, or a folder for mediakeeper.db);\n"+
+		"  # mediakeeper.db next to this file by default. Also -db, MEDIAKEEPER_DB.",
 		"database", s.Database, s.Database != "", "/var/lib/mediakeeper/mediakeeper.db")
+	sub("The folder of screenshots and episode stills; .cache in the first library folder by default.\n"+
+		"  # Also -cache, MEDIAKEEPER_CACHE. Moving it is harmless: the images are taken again.",
+		"cache", s.Cache, s.Cache != "", "/var/cache/mediakeeper")
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

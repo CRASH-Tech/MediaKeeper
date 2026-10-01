@@ -9,14 +9,14 @@
 # command line; that is interactive, so it is run by hand in a one-off
 # container, which shares the volumes and settings of the service below:
 #
-#   docker compose run --rm mediakeeper -setup              enter API keys once
-#   docker compose run --rm mediakeeper -dry-run /media     show the plan
-#   docker compose run --rm mediakeeper /media              organize
-#   docker compose run --rm mediakeeper -undo /media        revert the last run
+#   docker compose run --rm crashntech/mediakeeper:latest -setup              enter API keys once
+#   docker compose run --rm crashntech/mediakeeper:latest -dry-run /media     show the plan
+#   docker compose run --rm crashntech/mediakeeper:latest /media              organize
+#   docker compose run --rm crashntech/mediakeeper:latest -undo /media        revert the last run
 
 services:
   mediakeeper:
-    image: OWNER/mediakeeper:latest # replace OWNER with the Docker Hub account
+    image: crashntech/mediakeeper:0.2.0-preview4
     # build: .                              # or build from the sources here
     container_name: mediakeeper
     restart: unless-stopped
@@ -38,6 +38,10 @@ services:
       # is generated on the first start and printed to the log once.
       MEDIAKEEPER_ADMIN: admin
       MEDIAKEEPER_ADMIN_PASSWORD: change-me
+      # Where the database and the generated images are kept (defaults: the
+      # database next to the settings in /config, images in /media/.cache):
+      # MEDIAKEEPER_DB: /config/mediakeeper/mediakeeper.db
+      # MEDIAKEEPER_CACHE: /cache
       # Keys can be given here instead of "mediakeeper -setup":
       # TMDB_API_KEY: ""
       # OMDB_API_KEY: ""

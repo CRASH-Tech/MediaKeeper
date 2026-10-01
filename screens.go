@@ -21,8 +21,11 @@ import (
 // in the background by ffmpeg and kept in a hidden folder of the library,
 // where media centers and the library scan do not look:
 //
-//	<library>/.cache/screenshots/<movie id>/01.jpg ... 08.jpg
-//	<library>/.cache/stills/<episode id>.jpg
+//	<cache>/screenshots/<movie id>/01.jpg ... 08.jpg
+//	<cache>/stills/<episode id>.jpg
+//
+// The cache is .cache in the first library folder unless the settings
+// (-cache, MEDIAKEEPER_CACHE, server.cache) put it elsewhere.
 
 const (
 	screenCount = 8
@@ -56,7 +59,7 @@ type screenMaker struct {
 }
 
 func newScreenMaker(s *Server) *screenMaker {
-	return &screenMaker{s: s, dir: filepath.Join(s.root, ".cache", "screenshots"), stillsDir: filepath.Join(s.root, ".cache", "stills"),
+	return &screenMaker{s: s, dir: filepath.Join(s.cacheDir, "screenshots"), stillsDir: filepath.Join(s.cacheDir, "stills"),
 		pending: map[string]bool{}, failed: map[string]bool{}, wake: make(chan struct{}, 1), stop: make(chan struct{})}
 }
 

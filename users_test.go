@@ -152,12 +152,58 @@ func TestDatabasePath(t *testing.T) {
 	if got := databasePath(filepath.Join(dir, "flag.db"), dir); got != filepath.Join(dir, "flag.db") {
 		t.Errorf("the flag over everything: %s", got)
 	}
-	// Written into the settings file with the rest.
+	// A relative path in the settings is relative to the settings file.
+	t.Setenv("MEDIAKEEPER_DB", "")
+	if got := databasePath("", "data/mk.db"); got != filepath.Join(filepath.Dir(configPath()), "data", "mk.db") {
+		t.Errorf("a relative path in the settings: %s", got)
+	}
+	// Written into the settings file with the rest, and documented there.
 	cfg, _, _ := loadConfig()
-	cfg.Server.Database = "/data/mk.db"
+	cfg.Server.Database, cfg.Server.Cache = "/data/mk.db", "/data/cache"
 	saveConfig(cfg)
-	if !strings.Contains(mustRead(t, configPath()), "database: /data/mk.db") {
-		t.Errorf("settings file:\n%s", mustRead(t, configPath()))
+	text := mustRead(t, configPath())
+	wantAll(t, "settings file", text, "database: /data/mk.db", "cache: /data/cache", "MEDIAKEEPER_CONFIG", "MEDIAKEEPER_DB", "MEDIAKEEPER_CACHE")
+	if again, _, err := loadConfig(); err != nil || again.Server.Cache != "/data/cache" {
+		t.Errorf("read back: %+v %v", again.Server, err)
+	}
+}
+
+// The cache of generated images is .cache in the first library folder
+// unless the settings, MEDIAKEEPER_CACHE or -cache put it elsewhere.
+func TestCachePath(t *testing.T) {
+	setup(t, Config{})
+	t.Setenv("MEDIAKEEPER_CACHE", "")
+	if got := cachePath("", ""); got != "" {
+		t.Errorf("default: %q", got)
+	}
+	if got := cachePath("", "thumbs"); got != filepath.Join(filepath.Dir(configPath()), "thumbs") {
+		t.Errorf("relative in the settings: %s", got)
+	}
+	dir := t.TempDir()
+	t.Setenv("MEDIAKEEPER_CACHE", dir)
+	if got := cachePath("", "thumbs"); got != dir {
+		t.Errorf("the variable over the settings: %s", got)
+	}
+	if got := cachePath(filepath.Join(dir, "x"), "thumbs"); got != filepath.Join(dir, "x") {
+		t.Errorf("the flag over everything: %s", got)
+	}
+
+	root := t.TempDir()
+	cfg, _, _ := loadConfig()
+	for _, cache := range []string{"", dir} {
+		s, err := NewServer(ServerOptions{Roots: []Root{{Path: root}}, Cache: cache, Name: "x", Port: 8200, Config: cfg}, func(string, ...any) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := filepath.Join(root, ".cache")
+		if cache != "" {
+			want = cache
+		}
+		if s.screens.dir != filepath.Join(want, "screenshots") || s.screens.stillsDir != filepath.Join(want, "stills") {
+			t.Errorf("cache %q: screenshots in %s, stills in %s", cache, s.screens.dir, s.screens.stillsDir)
+		}
+		s.dl.Close()
+		s.auth.Close()
 	}
 }
 

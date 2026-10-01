@@ -27,14 +27,15 @@ var webFiles embed.FS
 // API, the Jellyfin-compatible API for native clients, and (unless switched
 // off) the DLNA media server.
 type Server struct {
-	roots  []Root // the folders of the library
-	root   string // the first of them, which also holds the downloads and the cache
-	name   string
-	port   int
-	cfg    Config
-	noTags bool
-	guests bool // the web interface can be watched without signing in
-	log    func(format string, args ...any)
+	roots    []Root // the folders of the library
+	root     string // the first of them, which also holds the downloads
+	cacheDir string // generated images: screenshots, episode stills
+	name     string
+	port     int
+	cfg      Config
+	noTags   bool
+	guests   bool // the web interface can be watched without signing in
+	log      func(format string, args ...any)
 
 	prober *prober
 	lib    *Library
@@ -60,6 +61,7 @@ type ServerOptions struct {
 	Debug    bool // log what the Jellyfin apps ask and get (jellyfin-debug.log)
 	Roots    []Root
 	Database string // the SQLite file of accounts and watch states; "" for the default
+	Cache    string // the folder of generated images; "" for .cache in the first folder
 	Name     string
 	Port     int
 	DLNA     bool
@@ -81,6 +83,10 @@ func NewServer(o ServerOptions, log func(string, ...any)) (*Server, error) {
 	}
 	s := &Server{roots: o.Roots, root: o.Roots[0].Path, name: o.Name, port: o.Port, cfg: o.Config, noTags: o.NoTags, guests: o.Guests, log: log,
 		prober: newProber(), auth: auth, transcodes: make(chan struct{}, 2), failures: map[string][]time.Time{}}
+	s.cacheDir = o.Cache
+	if s.cacheDir == "" {
+		s.cacheDir = filepath.Join(o.Roots[0].Path, ".cache")
+	}
 	s.ffmpeg, _ = exec.LookPath("ffmpeg")
 	if o.Debug {
 		if s.debug, err = openDebugLog(); err != nil {
