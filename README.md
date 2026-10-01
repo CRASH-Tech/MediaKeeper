@@ -422,11 +422,19 @@ in the image name, set the administrator's password, check `user` (the owner
 of your media folder: `id -u`, `id -g`) and the path to the library, then:
 
 ```sh
+mkdir -p config && sudo chown 1000:1000 config   # once: writable by the container's user
 docker compose up -d        # start the server
 docker compose logs -f      # see who signs in and what is being played
 ```
 
 Then open `http://<host>:8200/`.
+
+The container runs as `user`, and everything it writes — settings, the
+database, downloads, the cache, renamed files — must be writable by that
+user. A mounted folder that does not exist yet is created by Docker as
+root, which the container then cannot write to; the server says so at the
+start (`cannot keep the database … must be writable by the user the server
+runs as (uid 1000…)`). Create the folders first, or `chown` them.
 
 The example uses `network_mode: host`. DLNA needs it: players discover the
 server by multicast, which does not pass through Docker's bridge network

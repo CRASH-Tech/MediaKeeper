@@ -348,3 +348,29 @@ func TestHistoryPages(t *testing.T) {
 		t.Errorf("cursor: %+v", c)
 	}
 }
+
+// A database where it cannot be written gets an error that says why, not
+// SQLite's "out of memory (14)".
+func TestDatabaseNotWritable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root writes anywhere")
+	}
+	dir := t.TempDir()
+	os.Chmod(dir, 0o555)
+	defer os.Chmod(dir, 0o755)
+	_, err := OpenAuth(filepath.Join(dir, "mediakeeper.db"), "")
+	if err == nil || !strings.Contains(err.Error(), "must be writable by the user the server runs as") || strings.Contains(err.Error(), "out of memory") {
+		t.Errorf("error: %v", err)
+	}
+	// An existing database that cannot be written.
+	ok := t.TempDir()
+	a, err := OpenAuth(filepath.Join(ok, "mediakeeper.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Close()
+	os.Chmod(filepath.Join(ok, "mediakeeper.db"), 0o444)
+	if _, err := OpenAuth(filepath.Join(ok, "mediakeeper.db"), ""); err == nil || !strings.Contains(err.Error(), "must be writable") {
+		t.Errorf("a read-only database: %v", err)
+	}
+}

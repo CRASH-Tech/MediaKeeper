@@ -1,6 +1,7 @@
 # MediaKeeper as a media server: web interface, Jellyfin API and DLNA on
 # http://<host>:8200/
 #
+#   mkdir -p config && sudo chown 1000:1000 config   once, before the first start
 #   docker compose up -d                 start the server
 #   docker compose logs -f               see who signs in and what is played
 #
@@ -16,7 +17,7 @@
 
 services:
   mediakeeper:
-    image: crashntech/mediakeeper:0.2.0-preview4
+    image: crashntech/mediakeeper:latest
     # build: .                              # or build from the sources here
     container_name: mediakeeper
     restart: unless-stopped
@@ -39,7 +40,9 @@ services:
       MEDIAKEEPER_ADMIN: admin
       MEDIAKEEPER_ADMIN_PASSWORD: change-me
       # Where the database and the generated images are kept (defaults: the
-      # database next to the settings in /config, images in /media/.cache):
+      # database next to the settings in /config, images in /media/.cache).
+      # The folders must be writable by the user above; /cache needs its
+      # volume below.
       # MEDIAKEEPER_DB: /config/mediakeeper/mediakeeper.db
       # MEDIAKEEPER_CACHE: /cache
       # Keys can be given here instead of "mediakeeper -setup":
@@ -52,7 +55,11 @@ services:
       # More library folders, e.g. on another disk (add them to the command):
       # - /mnt/disk2/films:/films
       # - /mnt/disk2/series:/series
-      - ./config:/config # settings, accounts, watch progress; must be writable by the user above
+      # Settings, accounts, watch progress. It must be writable by the user
+      # above: a folder Docker creates by itself belongs to root, so create it
+      # first (mkdir -p config && sudo chown 1000:1000 config).
+      - ./config:/config
+      # - ./cache:/cache # with MEDIAKEEPER_CACHE above
 
     # The server's settings can also live in ./config/mediakeeper/config.yaml.
     # The name clients show is the host name unless set with -name.

@@ -205,7 +205,7 @@ func fromUnix(n int64) time.Time {
 // watch states of an earlier version's server.json (legacy) are imported
 // then, and the file is kept as server.json.old.
 func OpenAuth(path, legacy string) (*Auth, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := writableFor(path); err != nil {
 		return nil, err
 	}
 	fresh := !exists(path)
@@ -240,6 +240,40 @@ func OpenAuth(path, legacy string) (*Auth, error) {
 }
 
 func (a *Auth) Close() error { return a.db.Close() }
+
+// writableFor checks that the database can be made and written where it
+// is to be: SQLite needs to write the folder too (its -wal and -shm files
+// go next to the database), and when it cannot it says only "unable to open
+// database file: out of memory (14)", which sends people looking for the
+// wrong thing.
+func writableFor(path string) error {
+	dir := filepath.Dir(path)
+	who := ""
+	if uid := os.Getuid(); uid >= 0 {
+		who = fmt.Sprintf(" (uid %d, gid %d)", uid, os.Getgid())
+	}
+	problem := func(err error) error {
+		return fmt.Errorf("cannot keep the database %s: %v. The folder %s must be writable by the user the server runs as%s"+
+			" — with Docker, the owner of the mounted folder: chown -R %d:%d on it", path, err, dir, who, max(os.Getuid(), 0), max(os.Getgid(), 0))
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return problem(err)
+	}
+	probe, err := os.CreateTemp(dir, ".mediakeeper-write-test-*")
+	if err != nil {
+		return problem(err)
+	}
+	probe.Close()
+	os.Remove(probe.Name())
+	if exists(path) {
+		f, err := os.OpenFile(path, os.O_RDWR, 0)
+		if err != nil {
+			return problem(err)
+		}
+		f.Close()
+	}
+	return nil
+}
 
 // load reads the accounts, tokens and watch states into memory.
 func (a *Auth) load() error {
