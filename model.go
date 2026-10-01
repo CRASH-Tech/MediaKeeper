@@ -44,7 +44,9 @@ type LocalTitle struct {
 }
 
 type Person struct {
-	Name, Role, Thumb string
+	Name  string `json:"name"`
+	Role  string `json:"role,omitempty"`
+	Thumb string `json:"thumb,omitempty"`
 }
 
 // Movie, Show, Season and Episode are provider-neutral: every source
@@ -393,8 +395,8 @@ func httpGet(rawURL string, header map[string]string) ([]byte, *url.URL, error) 
 	}
 }
 
-// Download saves an image to dest via a temporary file.
-func Download(imageURL, dest string) error {
+// DownloadFile saves an image to dest via a temporary file.
+func DownloadFile(imageURL, dest string) error {
 	req, err := http.NewRequest(http.MethodGet, imageURL, nil)
 	if err != nil {
 		return err

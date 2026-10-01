@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha1"
 	"encoding/xml"
 	"errors"
@@ -13,13 +12,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -46,10 +43,11 @@ var dlnaMime = map[string]string{
 // players on the local network find it by themselves (SSDP), browse it
 // (ContentDirectory over SOAP) and play the files over HTTP.
 type DLNAServer struct {
-	root, name, uuid string
-	port             int
-	log              func(format string, args ...any)
-	prober           *prober
+	roots      []Root
+	name, uuid string
+	port       int
+	log        func(format string, args ...any)
+	prober     *prober
 
 	mu       sync.Mutex
 	lib      *dlnaLibrary
@@ -58,9 +56,13 @@ type DLNAServer struct {
 }
 
 func NewDLNAServer(root, name string, port int, log func(string, ...any)) (*DLNAServer, error) {
+	return newDLNAServer([]Root{{Path: root}}, name, port, log, newProber())
+}
+
+func newDLNAServer(roots []Root, name string, port int, log func(string, ...any), p *prober) (*DLNAServer, error) {
 	host, _ := os.Hostname()
-	sum := sha1.Sum([]byte("mediakeeper|" + host + "|" + root))
-	s := &DLNAServer{root: root, name: name, port: port, log: log, prober: newProber(), updateID: 1,
+	sum := sha1.Sum([]byte("mediakeeper|" + host + "|" + roots[0].Path))
+	s := &DLNAServer{roots: roots, name: name, port: port, log: log, prober: p, updateID: 1,
 		// Stable across restarts, so that clients recognize the server.
 		uuid: fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])}
 	if _, err := s.library(); err != nil {
@@ -77,7 +79,7 @@ func (s *DLNAServer) library() (*dlnaLibrary, error) {
 	if s.lib != nil && time.Since(s.scanned) < dlnaRescanAfter {
 		return s.lib, nil
 	}
-	lib, err := buildLibrary(s.root)
+	lib, err := buildLibrary(s.roots)
 	if err != nil {
 		if s.lib != nil {
 			return s.lib, nil // keep serving what is known
@@ -88,7 +90,11 @@ func (s *DLNAServer) library() (*dlnaLibrary, error) {
 		s.updateID++
 	}
 	s.lib, s.scanned = lib, time.Now()
-	s.prober.enqueue(lib)
+	for _, n := range lib.nodes {
+		if n.IsItem() {
+			s.prober.request(n.Path, n.Size, n.ModTime)
+		}
+	}
 	return lib, nil
 }
 
@@ -471,7 +477,7 @@ func (s *DLNAServer) writeDIDL(b *strings.Builder, n *dlnaNode, base string, sam
 
 	attrs := fmt.Sprintf(`size="%d"`, n.Size)
 	duration := time.Duration(n.Runtime) * time.Minute
-	if info, ok := s.prober.get(n); ok {
+	if info, ok := s.prober.get(n.Path, n.Size, n.ModTime); ok {
 		if info.Duration > 0 {
 			duration = info.Duration
 		}
@@ -598,53 +604,4 @@ func (s *DLNAServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	b.WriteString("</ul>")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	io.WriteString(w, b.String())
-}
-
-// Serve runs the server until the program is interrupted.
-func Serve(ui *UI, root, name string, port int) error {
-	var logMu sync.Mutex
-	logf := func(format string, args ...any) {
-		logMu.Lock()
-		defer logMu.Unlock()
-		ui.Printf("%s "+format+"\n", append([]any{time.Now().Format("15:04:05")}, args...)...)
-	}
-	s, err := NewDLNAServer(root, name, port, logf)
-	if err != nil {
-		return err
-	}
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		return fmt.Errorf("cannot listen on port %d (try another one with -port): %w", port, err)
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	ui.Printf("DLNA server %s: %d movie(s), %d episode(s) from %s\n", ui.Bold(`"`+name+`"`), s.lib.movies, s.lib.episodes, root)
-	ifaces := localInterfaces()
-	for _, i := range ifaces {
-		ui.Printf("  http://%s:%d/  (%s)\n", i.ip, port, i.ifi.Name)
-	}
-	discovery := newSSDP(s, ifaces)
-	if err := discovery.start(); err != nil {
-		ui.Printf("%s\n", ui.Yellow("Network discovery is off ("+err.Error()+"): players will not find the server by themselves,\n"+
-			"but it still works by the address above."))
-	}
-	if s.prober.tool == "" {
-		ui.Printf("%s\n", ui.Dim("ffprobe is not installed: durations come from .nfo files only."))
-	}
-	ui.Printf("Press Ctrl+C to stop.\n\n")
-
-	server := &http.Server{Handler: s.Handler()}
-	failed := make(chan error, 1)
-	go func() { failed <- server.Serve(listener) }()
-	select {
-	case err = <-failed:
-	case <-ctx.Done():
-		ui.Printf("\nStopping…\n")
-	}
-	discovery.stop() // tells the players that the server is gone
-	shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	server.Shutdown(shutdown)
-	return err
 }

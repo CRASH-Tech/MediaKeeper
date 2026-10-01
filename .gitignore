@@ -2,9 +2,18 @@
 /mediakeeper
 /mediakeeper.exe
 /dist/
+/.cache/
 
 # Sample media for experiments
 /media/
 
 # Undo journals of runs inside the working tree
 .mediakeeper/
+
+# Settings, API keys and accounts kept next to the program
+/config.yaml
+/config.json
+/config.json.old
+/server.json
+/mediakeeper.db
+/jellyfin-debug.log

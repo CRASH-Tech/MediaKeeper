@@ -1,20 +1,23 @@
-# MediaKeeper as a DLNA media server.
+# MediaKeeper as a media server: web interface, Jellyfin API and DLNA on
+# http://<host>:8200/
 #
+#   mkdir -p config && sudo chown 1000:1000 config   once, before the first start
 #   docker compose up -d                 start the server
-#   docker compose logs -f               see what is being played
+#   docker compose logs -f               see who signs in and what is played
 #
-# Organizing the library (renaming, .nfo, posters) is interactive, so it is
-# run by hand in a one-off container, which shares the volumes and settings
-# of the service below:
+# New titles are added on the Downloads page of the web interface. Files
+# that are already on disk are organized (renaming, .nfo, posters) on the
+# command line; that is interactive, so it is run by hand in a one-off
+# container, which shares the volumes and settings of the service below:
 #
-#   docker compose run --rm mediakeeper -setup              enter API keys once
-#   docker compose run --rm mediakeeper -dry-run /media     show the plan
-#   docker compose run --rm mediakeeper /media              organize
-#   docker compose run --rm mediakeeper -undo /media        revert the last run
+#   docker compose run --rm crashntech/mediakeeper:latest -setup              enter API keys once
+#   docker compose run --rm crashntech/mediakeeper:latest -dry-run /media     show the plan
+#   docker compose run --rm crashntech/mediakeeper:latest /media              organize
+#   docker compose run --rm crashntech/mediakeeper:latest -undo /media        revert the last run
 
 services:
   mediakeeper:
-    image: OWNER/mediakeeper:latest # replace OWNER with the Docker Hub account
+    image: crashntech/mediakeeper:latest
     # build: .                              # or build from the sources here
     container_name: mediakeeper
     restart: unless-stopped
@@ -22,6 +25,8 @@ services:
     # Players find a DLNA server by multicast, which does not pass through
     # Docker's bridge network: the container has to share the host's network.
     # (Works on Linux; Docker Desktop on macOS/Windows cannot do this.)
+    # Without DLNA, remove this line, add "-dlna=false" to the command and use
+    #   ports: ["8200:8200"]
     network_mode: host
 
     # Files created in the library belong to this user instead of root.
@@ -30,6 +35,16 @@ services:
 
     environment:
       TZ: Europe/Moscow
+      # The administrator of the web interface. Without a password here, one
+      # is generated on the first start and printed to the log once.
+      MEDIAKEEPER_ADMIN: admin
+      MEDIAKEEPER_ADMIN_PASSWORD: change-me
+      # Where the database and the generated images are kept (defaults: the
+      # database next to the settings in /config, images in /media/.cache).
+      # The folders must be writable by the user above; /cache needs its
+      # volume below.
+      # MEDIAKEEPER_DB: /config/mediakeeper/mediakeeper.db
+      # MEDIAKEEPER_CACHE: /cache
       # Keys can be given here instead of "mediakeeper -setup":
       # TMDB_API_KEY: ""
       # OMDB_API_KEY: ""
@@ -37,9 +52,20 @@ services:
 
     volumes:
       - ./media:/media # the library: Movies/ and Shows/ are created inside
-      - ./config:/config # settings; the folder must be writable by the user above
+      # More library folders, e.g. on another disk (add them to the command):
+      # - /mnt/disk2/films:/films
+      # - /mnt/disk2/series:/series
+      # Settings, accounts, watch progress. It must be writable by the user
+      # above: a folder Docker creates by itself belongs to root, so create it
+      # first (mkdir -p config && sudo chown 1000:1000 config).
+      - ./config:/config
+      # - ./cache:/cache # with MEDIAKEEPER_CACHE above
 
-    command: ["-serve", "-port", "8200", "-name", "MediaKeeper", "/media"]
+    # The server's settings can also live in ./config/mediakeeper/config.yaml.
+    # The name clients show is the host name unless set with -name.
+    command: ["-serve", "-port", "8200", "/media"]
+    # With more folders: a folder of movies only, a folder of series only.
+    # command: ["-serve", "-port", "8200", "/media", "-movies", "/films", "-shows", "/series"]
 
     # Needed by "docker compose run" for the interactive dialogs.
     stdin_open: true

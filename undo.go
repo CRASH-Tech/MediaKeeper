@@ -44,7 +44,7 @@ func (j *Journal) empty() bool {
 }
 
 func (j *Journal) Save() error {
-	if j.empty() {
+	if j.empty() || j.path == "" {
 		return nil
 	}
 	data, err := json.MarshalIndent(j, "", " ")
