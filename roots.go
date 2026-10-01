@@ -23,8 +23,14 @@ const (
 
 // Root is one folder of the library.
 type Root struct {
-	Path string `yaml:"path"`
-	Kind string `yaml:"kind,omitempty"`
+	Path string `yaml:"path" json:"path"`
+	Kind string `yaml:"kind,omitempty" json:"kind,omitempty"`
+	// Key tells the identifiers of its titles from those of other folders.
+	// It is kept with the folder in the settings, so removing or reordering
+	// folders changes no identifiers (and loses no watch progress). Folders
+	// without one (the command line) get one by their place: see rootKey.
+	Key    string `yaml:"-" json:"key"`
+	HasKey bool   `yaml:"-" json:"hasKey"`
 }
 
 // parseRootKind accepts the usual words for the kinds.
@@ -97,7 +103,7 @@ func checkRoots(roots []Root) ([]Root, error) {
 				return nil, fmt.Errorf("the library folders %s and %s overlap", o.Path, path)
 			}
 		}
-		out = append(out, Root{Path: path, Kind: r.Kind})
+		out = append(out, Root{Path: path, Kind: r.Kind, Key: r.Key, HasKey: r.HasKey})
 	}
 	if len(out) == 0 {
 		return nil, errors.New("no library folders")
@@ -142,14 +148,38 @@ func rootFor(roots []Root, category string) Root {
 	return roots[0]
 }
 
-// rootKey makes the identifiers of titles in different folders distinct.
-// The first folder has none, so that its titles keep the identifiers (and
-// the watch progress) they had while it was the only one.
+// rootKey makes the identifiers of titles in different folders distinct:
+// the folder's own key, or one by its place — none for the first, so that
+// its titles keep the identifiers (and the watch progress) they had while
+// it was the only one, its path for the others.
 func rootKey(roots []Root, i int) string {
-	if i == 0 {
+	switch {
+	case roots[i].HasKey:
+		return roots[i].Key
+	case i == 0:
 		return ""
 	}
 	return roots[i].Path + "\x00"
+}
+
+// keyed gives every folder its key for good, the one it has by its place:
+// what is saved in the settings then stays, whatever happens to the others.
+func keyed(roots []Root) []Root {
+	out := make([]Root, len(roots))
+	for i, r := range roots {
+		r.Key, r.HasKey = rootKey(roots, i), true
+		out[i] = r
+	}
+	return out
+}
+
+// newRootKey is the key of a folder added to the library: none when it is
+// the first of a new library, else its path.
+func newRootKey(existing []Root, path string) string {
+	if len(existing) == 0 {
+		return ""
+	}
+	return path + "\x00"
 }
 
 // scanRoot scans one folder of the library. In a folder of movies nothing

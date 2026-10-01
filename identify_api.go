@@ -124,7 +124,7 @@ func (s *Server) fixUnit(id string, out *bytes.Buffer) (a *App, u *Unit, generat
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	providers, _, err := buildProviders(s.cfg)
+	providers, _, err := buildProviders(s.config())
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -138,7 +138,7 @@ func (s *Server) fixUnit(id string, out *bytes.Buffer) (a *App, u *Unit, generat
 	}
 	r := s.rootFor(anyFile)
 	ui := NewUI(strings.NewReader(""), out)
-	a = &App{ui: ui, root: r.Path, kind: r.Kind, out: r.Path, yes: true, refresh: true, noTags: s.noTags}
+	a = &App{ui: ui, root: r.Path, kind: r.Kind, out: r.Path, yes: true, refresh: true, noTags: s.tagsOff()}
 	a.hub = NewHub(providers, func(name, reason string) { ui.Printf("(source %s is off: %s)\n", name, reason) })
 	if a.files, err = scanRoot(r); err != nil {
 		return nil, nil, nil, err

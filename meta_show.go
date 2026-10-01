@@ -236,7 +236,7 @@ func (s *Server) saveShow(show *CatShow, dir string, m metaSave) (map[string]any
 	s.log("description of the series %q edited by hand", m.Title)
 
 	tags := false
-	if !s.noTags && (renamed || before.IMDb != after.IMDb || before.TMDB != after.TMDB ||
+	if !s.tagsOff() && (renamed || before.IMDb != after.IMDb || before.TMDB != after.TMDB ||
 		strings.Join(before.Genres, ",") != strings.Join(after.Genres, ",")) {
 		var jobs []tagJob
 		for _, ep := range show.Episodes() {
@@ -343,7 +343,7 @@ func (s *Server) episodeMetaAPI(w http.ResponseWriter, r *http.Request, ep *CatI
 			return
 		}
 		s.refresh()
-		tags := !s.noTags && fileTags.write(s, tagJob{ep.Path, episodeTags(ep, &nfo.root, s.showNode(ep.Show))})
+		tags := !s.tagsOff() && fileTags.write(s, tagJob{ep.Path, episodeTags(ep, &nfo.root, s.showNode(ep.Show))})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tags": tags})
 	case part == "thumb" && r.Method == http.MethodPost:
 		if err := saveUploadedImage(r, strings.TrimSuffix(ep.Path, filepath.Ext(ep.Path))+"-thumb.jpg"); err != nil {

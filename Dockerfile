@@ -26,12 +26,14 @@ RUN if [ "$(apk --print-arch)" = "x86_64" ]; then apk add --no-cache intel-media
     if [ -n "$EXTRA_PACKAGES" ]; then apk add --no-cache $EXTRA_PACKAGES; fi
 COPY --from=build /mediakeeper /usr/local/bin/mediakeeper
 
-# Settings (API keys) live in /config, the library in /media. The program's
-# own folder is not writable here, so the settings file is named outright,
-# where earlier versions of the image kept it.
+# The settings and accounts live in /config, the library in /media (the
+# server takes it as its library folder on the first start; others are
+# chosen in the web interface). The program's own folder is not writable
+# here, so where config.yaml is is named outright, where earlier versions of
+# the image kept it.
 ENV XDG_CONFIG_HOME=/config MEDIAKEEPER_CONFIG=/config/mediakeeper/config.yaml
 VOLUME ["/config", "/media"]
 EXPOSE 8200/tcp 1900/udp
 
 ENTRYPOINT ["mediakeeper"]
-CMD ["-serve", "/media"]
+CMD ["-serve"]

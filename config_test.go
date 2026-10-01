@@ -79,10 +79,19 @@ func TestConfigLocation(t *testing.T) {
 	dir := t.TempDir()
 	defer func() { configFile = "" }()
 
-	mustRun(t, "\n\n\n", "-config", dir, "-setup")
-	if !fileExists(filepath.Join(dir, "config.yaml")) {
+	mustRun(t, "omdbkey\n\n\n", "-config", dir, "-setup")
+	// The settings go into the database next to where config.yaml would be.
+	if configPath() != filepath.Join(dir, "config.yaml") || !fileExists(filepath.Join(dir, "mediakeeper.db")) {
 		t.Fatalf("-config with a folder: %s", configPath())
 	}
+	store, err := OpenAuth(filepath.Join(dir, "mediakeeper.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved, ok, _ := store.Settings(); !ok || saved.TMDBKey != "omdbkey" { // the first question is TMDB's
+		t.Errorf("-setup saved %+v", saved)
+	}
+	store.Close()
 	s, err := NewServer(ServerOptions{Roots: []Root{{Path: t.TempDir()}}, Name: "x", Port: 8200, Config: Config{}}, func(string, ...any) {})
 	if err != nil {
 		t.Fatal(err)

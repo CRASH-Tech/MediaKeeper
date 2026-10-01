@@ -498,7 +498,7 @@ func (s *Server) jellyfin(w http.ResponseWriter, r *http.Request) {
 
 func (c *jfContext) systemInfo() {
 	info := map[string]any{
-		"LocalAddress": "http://" + c.r.Host, "ServerName": c.s.name, "Version": jfVersion,
+		"LocalAddress": "http://" + c.r.Host, "ServerName": c.s.serverName(), "Version": jfVersion,
 		"ProductName": "Jellyfin Server", "OperatingSystem": "", "Id": c.s.auth.ServerID,
 		"StartupWizardCompleted": true,
 	}

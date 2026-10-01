@@ -26,7 +26,7 @@ func TestEditDescription(t *testing.T) {
 	boss.json("/api/library", &lib)
 	iron, loose := lib.Movies[0].ID, lib.Movies[1].ID
 
-	nfoPath := filepath.Join(s.root, "Iron Man (2008)", "Iron Man (2008).nfo")
+	nfoPath := filepath.Join(s.firstRoot(), "Iron Man (2008)", "Iron Man (2008).nfo")
 	os.WriteFile(nfoPath, []byte(nfoHeader+`<!-- mediakeeper source="tmdb" id="1726" kind="movie" -->
 <movie>
   <title>Iron Man</title>
@@ -82,13 +82,13 @@ func TestEditDescription(t *testing.T) {
 	if status, body := boss.post("/api/meta/"+loose, m); status != 200 {
 		t.Fatalf("save a new description: %d %s", status, body)
 	}
-	if nfo := mustRead(t, filepath.Join(s.root, "Some.Unknown.Movie.2019.WEB-DL.nfo")); !strings.Contains(nfo, "<plot>Hand-written.</plot>") {
+	if nfo := mustRead(t, filepath.Join(s.firstRoot(), "Some.Unknown.Movie.2019.WEB-DL.nfo")); !strings.Contains(nfo, "<plot>Hand-written.</plot>") {
 		t.Errorf("new nfo:\n%s", nfo)
 	}
 	if status, body := upload(t, boss, "/api/meta/"+loose+"/poster", pngImage(300, 450)); status != 200 {
 		t.Fatalf("poster: %d %s", status, body)
 	}
-	poster, _ := os.ReadFile(filepath.Join(s.root, "Some.Unknown.Movie.2019.WEB-DL-poster.jpg"))
+	poster, _ := os.ReadFile(filepath.Join(s.firstRoot(), "Some.Unknown.Movie.2019.WEB-DL-poster.jpg"))
 	if !bytes.HasPrefix(poster, []byte("\xff\xd8")) {
 		t.Errorf("a PNG poster was not stored as JPEG")
 	}
@@ -108,11 +108,11 @@ func TestEditDescription(t *testing.T) {
 		t.Skip("mkvtoolnix is not installed: the tags inside the file are not checked")
 	}
 	ffmpeg, _ := exec.LookPath("ffmpeg")
-	video := filepath.Join(s.root, "Iron Man (2008)", "Iron Man (2008).mkv")
+	video := filepath.Join(s.firstRoot(), "Iron Man (2008)", "Iron Man (2008).mkv")
 	if out, err := exec.Command(ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=d=2:s=320x240:r=10", "-c:v", "libx264", video).CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
-	s.noTags = false
+	s.live.cfg.Server.NoTags = false
 	s.refresh()
 	boss.json("/api/library", &lib)
 	if status, body := upload(t, boss, "/api/meta/"+lib.Movies[0].ID+"/poster", pngImage(200, 300)); status != 200 || !strings.Contains(body, `"tags":true`) {
@@ -218,7 +218,7 @@ func TestFillFromCatalogue(t *testing.T) {
 		t.Fatalf("filled in: %+v", filled)
 	}
 	// Nothing is saved by a lookup.
-	if exists(filepath.Join(s.root, "Some.Unknown.Movie.2019.WEB-DL.nfo")) {
+	if exists(filepath.Join(s.firstRoot(), "Some.Unknown.Movie.2019.WEB-DL.nfo")) {
 		t.Fatalf("a lookup wrote an .nfo")
 	}
 	// A series picked for a movie file is taken as a movie.
@@ -234,18 +234,18 @@ func TestFillFromCatalogue(t *testing.T) {
 	if status, body := boss.post("/api/meta/"+loose, save); status != 200 || strings.Contains(body, "problems\":[\"") {
 		t.Fatalf("save: %d %s", status, body)
 	}
-	dir := filepath.Join(s.root, moviesFolder, "Железный человек (2008)")
+	dir := filepath.Join(s.firstRoot(), moviesFolder, "Железный человек (2008)")
 	nfo := mustRead(t, filepath.Join(dir, "Железный человек (2008).nfo"))
 	wantAll(t, "nfo", nfo, `<!-- mediakeeper source="tmdb" id="1726" kind="movie" -->`,
 		`<uniqueid type="tmdb" default="true">1726</uniqueid>`, `<uniqueid type="imdb">tt0371746</uniqueid>`,
 		"<plot>Checked and changed by hand.</plot>", "<thumb>"+filled.Meta.Cast[0].Thumb+"</thumb>")
 	if data, _ := os.ReadFile(filepath.Join(dir, "Железный человек (2008).avi")); string(data) != "loose" {
-		t.Errorf("the video was not renamed:\n  %s", strings.Join(tree(t, s.root), "\n  "))
+		t.Errorf("the video was not renamed:\n  %s", strings.Join(tree(t, s.firstRoot()), "\n  "))
 	}
 	if data, _ := os.ReadFile(filepath.Join(dir, "Железный человек (2008)-poster.jpg")); !strings.Contains(string(data), "ironman.jpg") {
-		t.Errorf("the catalogue's poster was not taken:\n  %s", strings.Join(tree(t, s.root), "\n  "))
+		t.Errorf("the catalogue's poster was not taken:\n  %s", strings.Join(tree(t, s.firstRoot()), "\n  "))
 	}
-	if exists(filepath.Join(s.root, "Some.Unknown.Movie.2019.WEB-DL.avi")) {
+	if exists(filepath.Join(s.firstRoot(), "Some.Unknown.Movie.2019.WEB-DL.avi")) {
 		t.Errorf("the old file is still there")
 	}
 	// The new name is in the library, and the run can be undone.
@@ -254,8 +254,8 @@ func TestFillFromCatalogue(t *testing.T) {
 	for _, m := range lib.Movies {
 		found = found || m.Title == "Железный человек"
 	}
-	if !found || len(journals(s.root)) != 1 {
-		t.Errorf("after saving: %+v, journals %d", lib.Movies, len(journals(s.root)))
+	if !found || len(journals(s.firstRoot())) != 1 {
+		t.Errorf("after saving: %+v, journals %d", lib.Movies, len(journals(s.firstRoot())))
 	}
 }
 
@@ -267,7 +267,7 @@ func TestEditSeries(t *testing.T) {
 	var lib libraryView
 	boss.json("/api/library", &lib)
 	show := lib.Shows[0].ID
-	ent := filepath.Join(s.root, "Star Trek - Enterprise (2001)")
+	ent := filepath.Join(s.firstRoot(), "Star Trek - Enterprise (2001)")
 
 	if status, _ := kid.get("/api/meta/" + show); status != http.StatusForbidden {
 		t.Errorf("a viewer reads the editor: %d", status)
@@ -367,10 +367,10 @@ func TestEditSeries(t *testing.T) {
 	}
 	var res struct{ ID string }
 	mustUnmarshal(t, body, &res)
-	dir := filepath.Join(s.root, showsFolder, "Звёздный путь - Энтерпрайз (2001)")
+	dir := filepath.Join(s.firstRoot(), showsFolder, "Звёздный путь - Энтерпрайз (2001)")
 	wantAll(t, "tvshow.nfo", mustRead(t, filepath.Join(dir, "tvshow.nfo")), "<plot>Checked by hand.</plot>", `kind="tv"`)
 	if !exists(filepath.Join(dir, "Season 01", "Звёздный путь - Энтерпрайз S01E01-E02 - Разорванный круг (1) + Разорванный круг (2).mkv")) || exists(ent) {
-		t.Errorf("not filed anew:\n  %s", strings.Join(tree(t, s.root), "\n  "))
+		t.Errorf("not filed anew:\n  %s", strings.Join(tree(t, s.firstRoot()), "\n  "))
 	}
 	if data, _ := os.ReadFile(filepath.Join(dir, "poster.jpg")); string(data) == "SHOWPOSTER" {
 		t.Errorf("the catalogue's poster was not taken")
@@ -385,7 +385,7 @@ func TestEditSeries(t *testing.T) {
 // in: only filing them from a catalogue puts them into one.
 func TestSeriesWithoutFolder(t *testing.T) {
 	s, srv := serverFixture(t)
-	os.WriteFile(filepath.Join(s.root, "Loose.Show.S01E01.mkv"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(s.firstRoot(), "Loose.Show.S01E01.mkv"), []byte("x"), 0o644)
 	s.refresh()
 	boss := newBrowser(t, srv, "boss")
 	var lib libraryView
@@ -407,7 +407,7 @@ func TestSeriesWithoutFolder(t *testing.T) {
 	if status, body := boss.post("/api/meta/"+loose, movieMeta{Title: "Loose Show", Plot: "x"}); status != 400 || !strings.Contains(body, "folder of their own") {
 		t.Errorf("saved without a folder: %d %s", status, body)
 	}
-	if exists(filepath.Join(s.root, "tvshow.nfo")) {
+	if exists(filepath.Join(s.firstRoot(), "tvshow.nfo")) {
 		t.Errorf("the whole library was described as one series")
 	}
 }
@@ -417,7 +417,7 @@ func TestSeriesWithoutFolder(t *testing.T) {
 func TestCollection(t *testing.T) {
 	s, srv := serverFixture(t)
 	boss := newBrowser(t, srv, "boss")
-	nfo := filepath.Join(s.root, "Iron Man (2008)", "Iron Man (2008).nfo")
+	nfo := filepath.Join(s.firstRoot(), "Iron Man (2008)", "Iron Man (2008).nfo")
 	for _, set := range []string{"<set><name>Iron Man Collection</name></set>", "<set>Iron Man Collection</set>"} {
 		os.WriteFile(nfo, []byte(nfoHeader+"<movie><title>Iron Man</title><year>2008</year>"+set+"</movie>"), 0o644)
 		s.refresh()

@@ -56,12 +56,19 @@ type DLNAServer struct {
 }
 
 func NewDLNAServer(root, name string, port int, log func(string, ...any)) (*DLNAServer, error) {
-	return newDLNAServer([]Root{{Path: root}}, name, port, log, newProber())
+	return newDLNAServer([]Root{{Path: root}}, "", name, port, log, newProber())
 }
 
-func newDLNAServer(roots []Root, name string, port int, log func(string, ...any), p *prober) (*DLNAServer, error) {
+// newDLNAServer serves the library folders; its UUID, by which players
+// know it, comes from the first folder (as it always did), or from the
+// server's own id while there is no folder yet.
+func newDLNAServer(roots []Root, serverID, name string, port int, log func(string, ...any), p *prober) (*DLNAServer, error) {
 	host, _ := os.Hostname()
-	sum := sha1.Sum([]byte("mediakeeper|" + host + "|" + roots[0].Path))
+	seed := serverID
+	if len(roots) > 0 {
+		seed = roots[0].Path
+	}
+	sum := sha1.Sum([]byte("mediakeeper|" + host + "|" + seed))
 	s := &DLNAServer{roots: roots, name: name, port: port, log: log, prober: p, updateID: 1,
 		// Stable across restarts, so that clients recognize the server.
 		uuid: fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])}
@@ -69,6 +76,26 @@ func newDLNAServer(roots []Root, name string, port int, log func(string, ...any)
 		return nil, err
 	}
 	return s, nil
+}
+
+// setRoots changes the folders it serves; the tree is built anew.
+func (s *DLNAServer) setRoots(roots []Root) {
+	s.mu.Lock()
+	s.roots, s.scanned = roots, time.Time{}
+	s.mu.Unlock()
+}
+
+// setName changes the name players show.
+func (s *DLNAServer) setName(name string) {
+	s.mu.Lock()
+	s.name = name
+	s.mu.Unlock()
+}
+
+func (s *DLNAServer) serverName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.name
 }
 
 // library returns the current tree, rescanning the directory when the last
@@ -79,7 +106,7 @@ func (s *DLNAServer) library() (*dlnaLibrary, error) {
 	if s.lib != nil && time.Since(s.scanned) < dlnaRescanAfter {
 		return s.lib, nil
 	}
-	lib, err := buildLibrary(s.roots)
+	lib, err := buildLibrary(s.roots) // (under s.mu)
 	if err != nil {
 		if s.lib != nil {
 			return s.lib, nil // keep serving what is known
@@ -138,7 +165,7 @@ func (s *DLNAServer) handleDescription(w http.ResponseWriter, r *http.Request) {
 	writeXML(w, `<root xmlns="urn:schemas-upnp-org:device-1-0" xmlns:dlna="urn:schemas-dlna-org:device-1-0">`+
 		`<specVersion><major>1</major><minor>0</minor></specVersion><device>`+
 		`<deviceType>`+dlnaDeviceType+`</deviceType>`+
-		`<friendlyName>`+xmlEsc(s.name)+`</friendlyName>`+
+		`<friendlyName>`+xmlEsc(s.serverName())+`</friendlyName>`+
 		`<manufacturer>MediaKeeper</manufacturer><modelName>MediaKeeper</modelName>`+
 		`<modelDescription>MediaKeeper DLNA media server</modelDescription><modelNumber>1</modelNumber>`+
 		`<UDN>uuid:`+s.uuid+`</UDN><dlna:X_DLNADOC>DMS-1.50</dlna:X_DLNADOC>`+
@@ -585,7 +612,7 @@ func (s *DLNAServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "<!doctype html><meta charset=utf-8><title>%s</title><h1>%s</h1><p>DLNA media server: %d movie(s), %d episode(s).</p>",
-		html.EscapeString(s.name), html.EscapeString(s.name), lib.movies, lib.episodes)
+		html.EscapeString(s.serverName()), html.EscapeString(s.serverName()), lib.movies, lib.episodes)
 	var walk func(n *dlnaNode)
 	walk = func(n *dlnaNode) {
 		if n.IsItem() {

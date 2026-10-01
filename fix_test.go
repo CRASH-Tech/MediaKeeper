@@ -43,18 +43,18 @@ func TestFixTitle(t *testing.T) {
 	if status, body := boss.post("/api/fix/"+iron, resolveRequest{Ref: "tmdb:10"}); status != 200 {
 		t.Fatalf("fix: %d %s", status, body)
 	}
-	dir := filepath.Join(s.root, moviesFolder, "На линии огня (1993)")
+	dir := filepath.Join(s.firstRoot(), moviesFolder, "На линии огня (1993)")
 	for name, want := range map[string]string{
 		"На линии огня (1993).mkv":    "0123456789",
 		"На линии огня (1993).en.srt": "-->",
 		"На линии огня (1993).nfo":    `source="tmdb" id="10"`,
 	} {
 		if data, _ := os.ReadFile(filepath.Join(dir, name)); !strings.Contains(string(data), want) {
-			t.Errorf("%s: %q\n  %s", name, data, strings.Join(tree(t, s.root), "\n  "))
+			t.Errorf("%s: %q\n  %s", name, data, strings.Join(tree(t, s.firstRoot()), "\n  "))
 		}
 	}
 	for _, gone := range []string{"Iron Man (2008)", moviesFolder + "/На линии огня (1993)/poster.jpg", moviesFolder + "/На линии огня (1993)/Iron Man (2008).nfo"} {
-		if exists(filepath.Join(s.root, filepath.FromSlash(gone))) {
+		if exists(filepath.Join(s.firstRoot(), filepath.FromSlash(gone))) {
 			t.Errorf("%s is still there", gone)
 		}
 	}
@@ -63,12 +63,12 @@ func TestFixTitle(t *testing.T) {
 	if status, body := boss.post("/api/fix/"+loose, resolveRequest{Source: "tmdb", ID: "777", Kind: kindMovie}); status != 200 {
 		t.Fatalf("fix a loose file: %d %s", status, body)
 	}
-	if !exists(filepath.Join(s.root, moviesFolder, "Мятеж (2025)", "Мятеж (2025).avi")) {
-		t.Errorf("the loose file was not filed:\n  %s", strings.Join(tree(t, s.root), "\n  "))
+	if !exists(filepath.Join(s.firstRoot(), moviesFolder, "Мятеж (2025)", "Мятеж (2025).avi")) {
+		t.Errorf("the loose file was not filed:\n  %s", strings.Join(tree(t, s.firstRoot()), "\n  "))
 	}
 	// An identity whose name is taken by another file is refused, and
 	// nothing moves.
-	taken := filepath.Join(s.root, moviesFolder, "Мятеж (2025)", "Мятеж (2025).mkv")
+	taken := filepath.Join(s.firstRoot(), moviesFolder, "Мятеж (2025)", "Мятеж (2025).mkv")
 	os.WriteFile(taken, []byte("another copy"), 0o644)
 	defer os.Remove(taken)
 	s.refresh()
@@ -92,7 +92,7 @@ func TestFixTitle(t *testing.T) {
 	if status, body := boss.post("/api/fix/"+show, resolveRequest{Ref: "tv:314"}); status != 200 {
 		t.Fatalf("fix a series: %d %s", status, body)
 	}
-	ent := filepath.Join(s.root, showsFolder, "Звёздный путь - Энтерпрайз (2001)")
+	ent := filepath.Join(s.firstRoot(), showsFolder, "Звёздный путь - Энтерпрайз (2001)")
 	for _, want := range []string{
 		"tvshow.nfo", "poster.jpg",
 		"Season 01/Звёздный путь - Энтерпрайз S01E01-E02 - Разорванный круг (1) + Разорванный круг (2).mkv",
@@ -100,13 +100,13 @@ func TestFixTitle(t *testing.T) {
 		"Season 02/Звёздный путь - Энтерпрайз S02E01 - Ударная волна - Часть 2.mkv",
 	} {
 		if !exists(filepath.Join(ent, filepath.FromSlash(want))) {
-			t.Errorf("missing %s\n  %s", want, strings.Join(tree(t, s.root), "\n  "))
+			t.Errorf("missing %s\n  %s", want, strings.Join(tree(t, s.firstRoot()), "\n  "))
 		}
 	}
-	if exists(filepath.Join(s.root, "Star Trek - Enterprise (2001)")) {
+	if exists(filepath.Join(s.firstRoot(), "Star Trek - Enterprise (2001)")) {
 		t.Errorf("the old series folder is still there")
 	}
-	for _, path := range tree(t, s.root) {
+	for _, path := range tree(t, s.firstRoot()) {
 		if strings.Contains(path, "Broken Bow") || strings.Contains(path, "Shockwave") {
 			t.Errorf("a file of the old identity is left: %s", path)
 		}
@@ -117,8 +117,8 @@ func TestFixTitle(t *testing.T) {
 	if len(lib.Shows) != 1 || lib.Shows[0].Title != "Звёздный путь: Энтерпрайз" || len(lib.Movies) != 2 {
 		t.Errorf("library after fixes: %+v", lib)
 	}
-	if len(journals(s.root)) != 3 {
-		t.Errorf("journals: %d, want one per fix", len(journals(s.root)))
+	if len(journals(s.firstRoot())) != 3 {
+		t.Errorf("journals: %d, want one per fix", len(journals(s.firstRoot())))
 	}
 	if status, _ := boss.post("/api/fix/0123456789abcdef0123456789abcdef", resolveRequest{Ref: "tmdb:10"}); status != 404 {
 		t.Errorf("unknown title: %d", status)
@@ -129,7 +129,7 @@ func TestFixTitle(t *testing.T) {
 // grouped by.
 func TestLibraryGroups(t *testing.T) {
 	s, srv := serverFixture(t)
-	nfo := filepath.Join(s.root, "Iron Man (2008)", "Iron Man (2008).nfo")
+	nfo := filepath.Join(s.firstRoot(), "Iron Man (2008)", "Iron Man (2008).nfo")
 	os.WriteFile(nfo, []byte(nfoHeader+`<movie><title>Iron Man</title><year>2008</year><genre>Action</genre><genre>Sci-Fi</genre>
 <country>USA</country><studio>Marvel</studio><director>Jon Favreau</director><credits>Mark Fergus</credits>
 <actor><name>Robert Downey Jr.</name><role>Tony Stark</role></actor><actor><name>Jeff Bridges</name></actor></movie>`), 0o644)
@@ -159,7 +159,7 @@ func TestHLS(t *testing.T) {
 	}
 	s, srv := serverFixture(t)
 	s.ffmpeg = ffmpeg
-	video := filepath.Join(s.root, "Clip (2020).avi")
+	video := filepath.Join(s.firstRoot(), "Clip (2020).avi")
 	gen := exec.Command(ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=d=14:s=160x120:r=10",
 		"-f", "lavfi", "-i", "sine=d=14", "-c:v", "mpeg4", "-c:a", "mp3", "-shortest", video)
 	if out, err := gen.CombinedOutput(); err != nil {
@@ -274,12 +274,12 @@ func TestScreenshots(t *testing.T) {
 	}
 	s, srv := serverFixture(t) // (it empties PATH)
 	s.ffmpeg, s.prober.tool = ffmpeg, ffprobe
-	clip := filepath.Join(s.root, "Clip (2020)", "Clip (2020).mkv")
+	clip := filepath.Join(s.firstRoot(), "Clip (2020)", "Clip (2020).mkv")
 	os.MkdirAll(filepath.Dir(clip), 0o755)
 	if out, err := exec.Command(ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=d=60:s=320x240:r=10", "-c:v", "libx264", clip).CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
-	os.MkdirAll(filepath.Join(s.screens.dir, "0123456789abcdef0123456789abcdef"), 0o755) // of a title that is gone
+	os.MkdirAll(filepath.Join(s.screens.shotsDir(), "0123456789abcdef0123456789abcdef"), 0o755) // of a title that is gone
 	s.refresh()
 	go s.screens.run()
 	defer s.screens.close()
@@ -317,7 +317,7 @@ func TestScreenshots(t *testing.T) {
 	if status != 200 || !strings.HasPrefix(body, "\xff\xd8") { // a JPEG
 		t.Errorf("screenshot: %d, %d bytes", status, len(body))
 	}
-	if exists(filepath.Join(s.screens.dir, "0123456789abcdef0123456789abcdef")) {
+	if exists(filepath.Join(s.screens.shotsDir(), "0123456789abcdef0123456789abcdef")) {
 		t.Errorf("screenshots of a title that is gone were not removed")
 	}
 	var cat struct{ Movies []struct{ Title string } }
@@ -365,7 +365,7 @@ func TestEpisodeStills(t *testing.T) {
 	}
 	s, srv := serverFixture(t) // (it empties PATH)
 	s.ffmpeg, s.prober.tool = ffmpeg, ffprobe
-	ent := filepath.Join(s.root, "Star Trek - Enterprise (2001)")
+	ent := filepath.Join(s.firstRoot(), "Star Trek - Enterprise (2001)")
 	video := filepath.Join(ent, "Season 01", "Star Trek - Enterprise S01E03 - Fight or Flight.mkv")
 	if out, err := exec.Command(ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=d=30:s=640x360:r=10", "-c:v", "libx264", video).CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
@@ -466,7 +466,7 @@ func TestJellyfinPlayback(t *testing.T) {
 	}
 	s, srv := serverFixture(t) // (it empties PATH)
 	s.ffmpeg, s.prober.tool = ffmpeg, ffprobe
-	film := filepath.Join(s.root, "Clip (2020)", "Clip (2020).mkv")
+	film := filepath.Join(s.firstRoot(), "Clip (2020)", "Clip (2020).mkv")
 	os.MkdirAll(filepath.Dir(film), 0o755)
 	if out, err := exec.Command(ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=d=40:s=320x240:r=25", "-f", "lavfi", "-i", "sine=d=40",
 		"-c:v", "libx264", "-g", "50", "-c:a", "ac3", "-shortest", film).CombinedOutput(); err != nil {
@@ -564,7 +564,7 @@ func TestJellyfinPlayback(t *testing.T) {
 
 	// A video that is re-encoded (MPEG-4 in AVI) gets a key frame every
 	// 6 s and is cut there.
-	avi := filepath.Join(s.root, "Old (1999)", "Old (1999).avi")
+	avi := filepath.Join(s.firstRoot(), "Old (1999)", "Old (1999).avi")
 	os.MkdirAll(filepath.Dir(avi), 0o755)
 	if out, err := exec.Command(ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=d=20:s=320x240:r=25", "-f", "lavfi", "-i", "sine=d=20",
 		"-c:v", "mpeg4", "-c:a", "mp3", "-shortest", avi).CombinedOutput(); err != nil {

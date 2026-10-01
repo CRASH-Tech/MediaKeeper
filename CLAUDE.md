@@ -26,8 +26,9 @@ Notes for Claude working on this repository. The architecture is described in
 - **Do not commit or push** unless asked. Do not touch the user's own running
   server or their settings: for live checks run the binary with
   `-config <scratchpad dir>` (see "Checking live" below).
-- API keys (OMDb, TMDB, Kinopoisk) live only in the user's `config.yaml`
-  (gitignored); never put them into code, tests or docs.
+- API keys (OMDb, TMDB, Kinopoisk) live only in the user's settings (the
+  `settings` row of `mediakeeper.db`, or a `config.yaml` not yet taken into
+  it — both gitignored); never put them into code, tests or docs.
 - Never send the user's e-mail or other personal data to outside services
   (e.g. in a User-Agent).
 - The UI is a "Liquid Glass" design (glass panels, capsules, blur); keep new
@@ -57,7 +58,7 @@ GOTOOLCHAIN=go1.24.0 go build .      # go.mod promises Go 1.24: check after touc
 
 | Area | Files |
 |---|---|
-| CLI, settings, library folders | `main.go`, `config.go`, `roots.go`, `ui.go` |
+| CLI, settings, library folders | `main.go`, `config.go` (paths, `config.yaml`), `settings.go` (settings in the DB, live changes, settings/setup API), `roots.go`, `ui.go` |
 | Scanning and file-name parsing | `scan.go`, `parse.go` |
 | Catalogue sources | `model.go` (Hub, Provider, Movie/Show), `tmdb.go`, `omdb.go`, `kinopoisk.go`, `tvmaze.go`, `wikidata.go`, `imdb.go`, `letterboxd.go` |
 | Identification | `identify.go` (search, autoPick, console dialog, refs), `identify_api.go` (web: candidates, `fix`, `fixUnit`) |
@@ -82,17 +83,29 @@ GOTOOLCHAIN=go1.24.0 go build .      # go.mod promises Go 1.24: check after touc
   fields only when set (see `mineJSON`).
 - **Errors** shown to users are full English sentences, lower-case start,
   no trailing period (`errors.New("the title cannot be empty")`).
-- **Settings**: every new setting goes into `Config`/`ServerConfig`
-  (`config.go`) *and* into `saveConfig`, which rewrites the whole commented
-  file — a field missing there is silently dropped by `-setup`. Loading uses
-  `KnownFields(true)`: a misspelt key is an error.
-- **Web UI**: `h(tag, attrs, ...children)` builds DOM and skips
-  `false`/`null` children; plain DOM methods (`replaceChildren`, `append`) do
-  **not** — `cond && el` there prints "undefined". Use `cond ? el : ""`.
+- **Settings** live in the database (`Auth.Settings`/`SaveSettings`: a JSON
+  `Config` in `meta`), changed under Settings in the web UI. A new setting
+  goes into `Config`/`ServerConfig` (with a JSON tag), `mergeConfig` (import
+  from `config.yaml`), `applySettings` (putting it into force, or saying it
+  takes a restart), `settingsView`/`settingsChange` (the API) and the
+  Settings page in `app.js`; if a flag or variable can set it, `main.go`
+  records it in `locked` (the page shows it read-only). Server code reads
+  settings only through the accessors (`s.config()`, `s.libRoots()`,
+  `s.firstRoot()`, `s.serverName()`, `s.cacheRoot()`, `s.card()`, …) — they
+  change while the server runs. `config.yaml` is an inbox: whatever it holds
+  besides `server.database` is merged into the DB at start and the file is
+  rewritten (old one kept as `config.yaml.old`).
+- **Web UI**: `h(tag, attrs, ...children)` builds DOM, flattens arrays and
+  skips `false`/`null` children; plain DOM methods (`replaceChildren`,
+  `append`) do **not** — an array or `cond && el` there prints as text. Use
+  `fill(el, ...children)`, which takes children the way `h()` does.
 - **Never change the item-ID scheme** casually: IDs are
   `md5(kind \0 rootKey + relPath)` (`catalogID`, `rootKey`); watch states,
-  ratings, history and Jellyfin clients depend on them. The first library
-  folder has an empty root key on purpose (its IDs predate multiple folders).
+  ratings, history and Jellyfin clients depend on them. A folder's key is
+  saved with it (`Root.Key`/`HasKey`, given by `withKeys`), so removing or
+  reordering folders keeps IDs. Keys given by place match the old scheme:
+  the first folder has an empty key (its IDs predate multiple folders), the
+  others their path + `\x00`.
 - When the server renames files, call `s.moved(before, map[old]new)` so watch
   states, history and download links follow (`Auth.Moved`).
 
@@ -123,7 +136,9 @@ GOTOOLCHAIN=go1.24.0 go build .      # go.mod promises Go 1.24: check after touc
   and look at the screenshots. An `alert()` blocks puppeteer clicks
   ("Input.dispatchMouseEvent timed out").
 - Live server for checks: `./mediakeeper -config <scratch>/srvcfg/mediakeeper -serve -port 8231 -dlna=false <scratch>/libN`
-  — scratch libraries only. The sample library `media/` (gitignored) is the
+  — scratch libraries only. A fresh `-config` folder with no folders on the
+  command line starts in setup mode: the web UI shows the first-start wizard
+  (`/api/setup`) until an administrator is made. The sample library `media/` (gitignored) is the
   user's: read it, symlink its files into a scratch library, but do not
   serve it directly (the server writes `.cache/` into the first folder).
 - The web files are embedded: rebuild and restart after UI edits.
@@ -171,11 +186,19 @@ GOTOOLCHAIN=go1.24.0 go build .      # go.mod promises Go 1.24: check after touc
 - **Web player**: converted video gets the app's own controls over the
   picture (the browser's cannot seek a stream of unknown length; Safari calls
   it "Live Broadcast"); full screen is the whole player.
-- **Paths**: database `-db` > `MEDIAKEEPER_DB` > `server.database` >
-  `mediakeeper.db` next to the settings; cache (screenshots, stills) `-cache`
-  > `MEDIAKEEPER_CACHE` > `server.cache` > `<first folder>/.cache`
-  (`chosenPath`: flag/env relative to the working directory, settings
-  relative to the settings file's folder).
+- **Paths**: database `-db` > `MEDIAKEEPER_DB` > `server.database` of
+  `config.yaml` > `mediakeeper.db` next to `config.yaml`; cache (screenshots,
+  stills) `-cache` > `MEDIAKEEPER_CACHE` > the `cache` setting >
+  `<first folder>/.cache` > `cache` next to the database (`chosenPath`:
+  flag/env relative to the working directory, settings relative to the
+  folder of `config.yaml`).
+- **First start**: with no account, `/api/setup` is open (and
+  `/api/settings/folders`, to choose folders); its POST validates the
+  settings first, then makes the administrator and signs them in, and closes
+  for good. `MEDIAKEEPER_ADMIN_PASSWORD` makes/resets the account instead.
+  Library folders a server first starts with (command line, or `/media` in
+  Docker) are saved once (`firstLibraries`, `LibrariesSet`), so the image's
+  command is just `-serve`.
 - **Settings location**: `-config` > `MEDIAKEEPER_CONFIG` > `config.yaml`
   next to the binary (if writable and not a `go run`/`go test` build) >
   `~/.config/mediakeeper/`; old settings move next to the binary once.

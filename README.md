@@ -45,7 +45,7 @@ media/                                      media/
 - [Docker](#docker)
   - [Identifying files with Docker](#identifying-files-with-docker)
 - [Options](#options)
-- [Settings file](#settings-file)
+- [Settings](#settings)
 - [Building from source](#building-from-source)
 
 ## Install
@@ -139,9 +139,10 @@ mediakeeper -movies /srv/movies -movies /mnt/disk2/films   # movies only
 mediakeeper -movies /srv/movies -shows /srv/series /srv/media
 ```
 
-The same folders can be written once in the [settings file](#settings-file)
-under `libraries:`; they are used whenever no folder is given on the command
-line, and a folder given by its path alone keeps the kind written there.
+The same folders can be chosen once in the web interface, under
+**Settings → Library** (see [Settings](#settings)); they are used whenever no
+folder is given on the command line, and a folder given by its path alone
+keeps the kind chosen there.
 
 - A folder of **movies** gets `Title (Year)/` right inside, a folder of
   **series** `Series (Year)/Season NN/`; neither gets `Movies/` or `Shows/`.
@@ -152,11 +153,11 @@ line, and a folder given by its path alone keeps the kind written there.
 - The server shows all folders together. New downloads go to the first
   folder of their kind (or the first holding both).
 - **The first folder is special:** the downloads in progress and (unless
-  [chosen otherwise](#settings-file)) the screenshots are kept in it, and its titles keep the identifiers — and the
-  watch progress — they had when it was the only one. Add new folders after
-  it. On the command line the folders given by their paths come first, then
-  `-movies` and `-shows`, so `-serve /media -movies /mnt/disk2` keeps
-  `/media` first.
+  [chosen otherwise](#settings)) the screenshots are kept in it. On the
+  command line the folders given by their paths come first, then `-movies`
+  and `-shows`, so `-serve /media -movies /mnt/disk2` keeps `/media` first.
+- Titles keep their identifiers — and with them the watch progress — when
+  folders chosen in the settings are added, removed or reordered.
 
 ## Sources and API keys
 
@@ -176,12 +177,13 @@ MediaKeeper works with no keys at all. Keys are free and add better data:
 - OMDb — <https://www.omdbapi.com/apikey.aspx>
 - Kinopoisk — <https://kinopoiskapiunofficial.tech>
 
-Enter them with `mediakeeper -setup`, or set `TMDB_API_KEY`, `OMDB_API_KEY`,
+Enter them in the web interface (**Settings → Descriptions**), with
+`mediakeeper -setup`, or set `TMDB_API_KEY`, `OMDB_API_KEY`,
 `KINOPOISK_API_KEY`.
 
 The table is in priority order: the first source with a confident match names
-the file. Change the order, or leave sources out, with
-`-sources omdb,tvmaze,wikidata`. A source that has no key, is unreachable or
+the file. Change the order, or leave sources out, under **Settings →
+Descriptions** or with `-sources omdb,tvmaze,wikidata`. A source that has no key, is unreachable or
 rejects the key is simply left out of the lists.
 
 When the data is not in Russian, the Russian title is looked up in Wikidata
@@ -194,14 +196,17 @@ server organizes.
 ## Media server
 
 ```sh
+mediakeeper -serve                          # the folders chosen under Settings
 mediakeeper -serve /path/to/media
 mediakeeper -serve -port 8200 -name "Living room" /path/to/media
 mediakeeper -serve /path/to/media -movies /mnt/disk2/films -shows /mnt/disk2/series
 ```
 
 With [several folders](#several-folders) the catalogue, the Jellyfin apps and
-DLNA show them all together; without a folder on the command line the
-server uses the `libraries` of the settings file.
+DLNA show them all together. Without a folder on the command line the server
+uses the folders chosen in the web interface under **Settings → Library**;
+they can be changed there while it runs. Folders given on the command line
+win, and the settings page shows them locked.
 
 One port serves three things:
 
@@ -228,15 +233,20 @@ login for watching too. Accounts have one of two roles:
 
 The Jellyfin API always needs an account; DLNA never does.
 
-On the first start an administrator `admin` is created and its password is
-printed once. To choose your own, or to reset a forgotten one, start the
-server with `MEDIAKEEPER_ADMIN_PASSWORD` (and optionally `MEDIAKEEPER_ADMIN`
-for the name). More users are added on the **Users** page. Accounts, login
-tokens, watch progress, ratings, watchlists and the history are kept in a
-SQLite database, `mediakeeper.db` next to the settings file (see
-[Settings file](#settings-file)); passwords are stored as salted PBKDF2
-hashes. A `server.json` of an earlier version is imported into it on the
-first start and kept as `server.json.old`.
+**The first start.** While there is no account, the web interface opens with
+a short setup: the administrator's name and password, the library folders
+(chosen from the server's folders), the server's name, the language and the
+catalogue keys. Everything but the account can be left for later. Whoever
+finishes it first becomes the administrator, so do it right after starting
+the server. To make the account without the browser, or to reset a forgotten
+password, start the server with `MEDIAKEEPER_ADMIN_PASSWORD` (and optionally
+`MEDIAKEEPER_ADMIN` for the name, `admin` by default).
+
+More users are added under **Settings → Users**. Accounts, login tokens,
+watch progress, ratings, watchlists and the history are kept in a SQLite
+database, `mediakeeper.db` (see [Settings](#settings)); passwords are stored
+as salted PBKDF2 hashes. A `server.json` of an earlier version is imported
+into it on the first start and kept as `server.json.old`.
 
 The server speaks plain HTTP. To reach it from the internet, put it behind a
 reverse proxy with TLS.
@@ -313,7 +323,7 @@ server does. With `hwaccel` it is done on a graphics card:
 | `qsv` | Intel Quick Sync |
 | `nvenc` | NVIDIA (needs an ffmpeg built with NVENC) |
 
-Set it in the settings file (`server.hwaccel`), with `-hwaccel` or with
+Choose it under **Settings → Server**, with `-hwaccel` or with
 `MEDIAKEEPER_HWACCEL`. At the start the server converts a second of a test
 picture on the card; only if that works is the card used, and the log says
 which. Decoding, deinterlacing, scaling and encoding all stay on the card; a
@@ -464,11 +474,11 @@ has to allow the HTTP port (8200/tcp by default) and, for DLNA, 1900/udp.
 ## Docker
 
 The image contains MediaKeeper, ffmpeg, mkvtoolnix and aria2. By default it
-runs the server for `/media`; settings and accounts are kept in `/config`.
+runs the server; the settings and accounts are kept in `/config`.
 
 [docker-compose.yaml](docker-compose.yaml) is a ready example. Replace `OWNER`
-in the image name, set the administrator's password, check `user` (the owner
-of your media folder: `id -u`, `id -g`) and the path to the library, then:
+in the image name, check `user` (the owner of your media folder: `id -u`,
+`id -g`) and the path to the library, then:
 
 ```sh
 mkdir -p config && sudo chown 1000:1000 config   # once: writable by the container's user
@@ -476,7 +486,16 @@ docker compose up -d        # start the server
 docker compose logs -f      # see who signs in and what is being played
 ```
 
-Then open `http://<host>:8200/`.
+Then open `http://<host>:8200/`: the [first start](#users) asks for the
+administrator and the library folders — the folders as the container sees
+them, `/media` in the example.
+
+**Upgrading** from a version that kept its settings in `config.yaml`: they
+are taken into the database at the first start, and so are the library
+folders named in the command (`["-serve", "/media"]` of older compose files).
+Folders in the command stay locked in the settings page; once the server has
+started with them, they can be taken out of the command (`["-serve"]`) and
+changed in the web interface.
 
 The container runs as `user`, and everything it writes — settings, the
 database, downloads, the cache, renamed files — must be writable by that
@@ -490,9 +509,8 @@ server by multicast, which does not pass through Docker's bridge network
 (this works on Linux; Docker Desktop on macOS and Windows cannot do it).
 Without DLNA (`-dlna=false`) an ordinary port mapping `8200:8200` is enough.
 
-Several library folders are mounted as several volumes and named in the
-command (or in `libraries:` of `/config/mediakeeper/config.yaml`, with the
-paths inside the container):
+Several library folders are mounted as several volumes and then chosen under
+**Settings → Library**, by their paths inside the container:
 
 ```yaml
     volumes:
@@ -500,12 +518,12 @@ paths inside the container):
       - /mnt/disk2/films:/films
       - /mnt/disk2/series:/series
       - ./config:/config
-    command: ["-serve", "/media", "-movies", "/films", "-shows", "/series"]
 ```
 
 Organizing them by hand is then `docker compose run --rm mediakeeper /media
--movies /films -shows /series` (or with no folders at all when they are in the
-settings).
+/films /series` (a folder named by its path keeps the kind chosen for it in
+the settings); `-dry-run` and `-undo` without folders take all the folders of
+the settings.
 
 ### Identifying files with Docker
 
@@ -518,7 +536,6 @@ attached, not in the background service.
 and settings as the service:
 
 ```sh
-docker compose run --rm mediakeeper -setup              # API keys, once (optional)
 docker compose run --rm mediakeeper -dry-run /media     # show the plan only
 docker compose run --rm mediakeeper /media              # identify and organize
 docker compose run --rm mediakeeper -undo /media        # revert the last run
@@ -540,8 +557,8 @@ docker run --rm -it \
 - `-it` is required: without a terminal the dialogs cannot be answered.
 - `--user` makes the renamed files and new folders belong to you, not to
   root. The config folder must be writable by that user.
-- `/config` keeps the API keys between runs. Instead of `-setup` the keys can
-  be passed as variables: `-e OMDB_API_KEY=...`.
+- `/config` keeps the settings — the API keys among them — between runs.
+  The keys can also be passed as variables: `-e OMDB_API_KEY=...`.
 - Everything after the image name is MediaKeeper's own arguments, the same as
   without Docker: `-dry-run /media`, `-no-tags /media`, `-undo /media`.
 - Host networking is not needed for organizing, only for DLNA.
@@ -561,8 +578,8 @@ docker run --rm --user "$(id -u):$(id -g)" \
 mediakeeper [options] [directory ...]
 ```
 
-Without folders, the `libraries` of the settings file are used, else the
-current directory.
+Without folders, the library folders of the [settings](#settings) are used,
+else the current directory.
 
 | Option          | Meaning                                                                 |
 |-----------------|-------------------------------------------------------------------------|
@@ -576,12 +593,12 @@ current directory.
 | `-refresh`      | Also redo videos that already have an `.nfo`, identifying them from scratch |
 | `-sources LIST` | Comma-separated sources in priority order                               |
 | `-lang CODE`    | Language of TMDB titles and descriptions, e.g. `ru-RU` (default `en-US`) |
-| `-setup`        | Enter API keys and exit                                                 |
-| `-debug`        | With `-serve`: log every request of the Jellyfin apps, and in full (device profiles, answers, video ranges; no tokens) in `jellyfin-debug.log` next to the settings |
+| `-setup`        | Enter API keys in the terminal, save them and exit                      |
+| `-debug`        | With `-serve`: log every request of the Jellyfin apps, and in full (device profiles, answers, video ranges; no tokens) in `jellyfin-debug.log` next to `config.yaml` |
 | `-hwaccel WAY`  | With `-serve`: convert video on a graphics card: `auto`, `vaapi`, `qsv`, `nvenc` or `none` (default) |
 | `-cache DIR`    | With `-serve`: the folder of screenshots and episode stills (default: `.cache` in the first library folder) |
-| `-db FILE`      | With `-serve`: the database of accounts, ratings, watchlists and history (default: `mediakeeper.db` next to the settings) |
-| `-config FILE`  | The settings file, or a folder for `config.yaml` in it (default: next to the program) |
+| `-db FILE`      | The database of settings, accounts, ratings, watchlists and history (default: `mediakeeper.db` next to `config.yaml`) |
+| `-config FILE`  | Where `config.yaml` is, or a folder for it (default: next to the program) |
 | `-serve`        | Run the media server for the folders instead of organizing them         |
 | `-port N`       | With `-serve`: HTTP port (default 8200)                                 |
 | `-name NAME`    | With `-serve`: the name clients show (default: the host name)          |
@@ -589,23 +606,47 @@ current directory.
 | `-guests=false` | With `-serve`: require a login to watch in the web interface            |
 | `-version`      | Print the version                                                       |
 
-## Settings file
+## Settings
 
-`config.yaml` next to the program. Another file can be given with
-`-config /path/to/config.yaml` (or a folder, for `config.yaml` in it) or in the
-variable `MEDIAKEEPER_CONFIG`. Where the program's folder cannot be written to
-(`/usr/local/bin`, a package manager's folder), the file is kept in
-`~/.config/mediakeeper/` instead; in Docker it is
-`/config/mediakeeper/config.yaml`. Settings that an earlier version kept in
-`~/.config/mediakeeper/` are moved next to the program on the first start,
-together with `server.json` or `mediakeeper.db` (stop a running server
-before that, or it will write its accounts back to the old place).
+The settings are kept in the database, `mediakeeper.db`, together with the
+accounts, and are changed in the web interface under **Settings**
+(administrators only):
 
-Every setting is optional, and a flag on the command line wins over the file.
-`mediakeeper -setup` writes the file with a comment for every setting;
-it can be edited by hand afterwards. A misspelt key is reported instead of
-silently ignored. A `config.json` from an earlier version is converted on
-the first start and kept as `config.json.old`.
+| Tab | What |
+|---|---|
+| Library | the library folders, chosen from the server's folders, and what each holds |
+| Descriptions | the API keys, the language, the sources and their order, a TMDB mirror |
+| Server | the name, the port, watching without signing in, DLNA, tags in downloaded files, hardware conversion, the folder of screenshots |
+| Users | the accounts and their roles |
+
+Most changes take effect at once — new library folders show up in the
+catalogue right away. The port and switching DLNA on or off take a restart;
+the page says so. `mediakeeper -setup` enters the API keys in a terminal.
+
+**Flags and variables win.** A setting given on the command line (`-port`,
+`-name`, folders, `-lang`, `-sources`, …) or in the environment
+(`TMDB_API_KEY`, `MEDIAKEEPER_HWACCEL`, …) is used instead of the saved one,
+and the settings page shows it locked, with what sets it.
+
+**Where things are.** The database is `mediakeeper.db` next to `config.yaml`,
+which is next to the program. Where the program's folder cannot be written
+to (`/usr/local/bin`, a package manager's folder), they are kept in
+`~/.config/mediakeeper/` instead; in Docker in `/config/mediakeeper/`.
+
+| What | Flag | Environment variable | In `config.yaml` | Default |
+|---|---|---|---|---|
+| `config.yaml` | `-config` | `MEDIAKEEPER_CONFIG` | — | next to the program |
+| the database | `-db` | `MEDIAKEEPER_DB` | `server.database` | `mediakeeper.db` next to `config.yaml` |
+| screenshots and episode stills | `-cache` | `MEDIAKEEPER_CACHE` | — (Settings → Server) | `.cache` in the first library folder |
+
+Each can be given as a folder too (`config.yaml`, `mediakeeper.db` in it).
+Relative paths are relative to the folder of `config.yaml`. Moving the cache
+is harmless: the images are simply taken again.
+
+**`config.yaml`** now only says where the database is. Settings written into
+it — by hand, or by an earlier version — are taken into the database at the
+next start; the file is then cleared and the old one kept as
+`config.yaml.old`. The keys are the ones earlier versions used:
 
 ```yaml
 tmdb_api_key: "..."
@@ -616,49 +657,34 @@ sources: [tmdb, tvmaze, omdb, wikidata, imdb]
 tmdb_api_url: https://api.themoviedb.org/3
 tmdb_image_url: https://image.tmdb.org/t/p/original
 
-libraries:           # used when no folder is given on the command line
+libraries:
   - /srv/media       # a plain path: both, in Movies/ and Shows/ inside
   - path: /mnt/disk2/films
     kind: movies     # movies only
   - path: /mnt/disk2/series
     kind: shows      # series only
 
-server:              # mediakeeper -serve
-  name: Living room  # the name clients show; the host name by default
+server:
+  name: Living room
   port: 8200
-  dlna: true         # DLNA has no login: the whole local network can watch
-  guests: true       # the web interface can be watched without signing in
-  no_tags: false     # do not write tags into the files of downloads
-  hwaccel: auto      # convert on a graphics card: auto, vaapi, qsv, nvenc, none (default)
-  database: /var/lib/mediakeeper/mediakeeper.db   # mediakeeper.db next to this file by default
-  cache: /var/cache/mediakeeper                    # .cache in the first library folder by default
+  dlna: true
+  guests: true
+  no_tags: false
+  hwaccel: auto
+  cache: /var/cache/mediakeeper
+  database: /var/lib/mediakeeper/mediakeeper.db   # stays in the file
 ```
 
-Where things are kept can be chosen three ways; the command line wins over
-the environment, the environment over the settings file. Relative paths in
-the settings file are relative to its folder.
-
-| What | Flag | Environment variable | Setting | Default |
-|---|---|---|---|---|
-| the settings file | `-config` | `MEDIAKEEPER_CONFIG` | — (it is the file) | `config.yaml` next to the program |
-| the database | `-db` | `MEDIAKEEPER_DB` | `server.database` | `mediakeeper.db` next to the settings |
-| screenshots and episode stills | `-cache` | `MEDIAKEEPER_CACHE` | `server.cache` | `.cache` in the first library folder |
-
-The settings file and the database can be given as a folder too
-(`config.yaml`, `mediakeeper.db` in it). Moving the cache is harmless: the
-images are simply taken again.
+A `config.json` or a `server.json` of older versions, and settings an
+earlier version kept in `~/.config/mediakeeper/`, are taken over on the
+first start as well (stop a running server before that).
 
 `tmdb_api_url` and `tmdb_image_url` point MediaKeeper at a mirror where TMDB
 itself is not reachable; a proxy from `HTTPS_PROXY` is honoured as well.
 
-Accounts, login tokens, watch progress, ratings, watchlists and the history
-are not settings: the server keeps them in the SQLite database
-`mediakeeper.db`, next to this file unless `database` in the settings, the
-`-db` flag or the variable `MEDIAKEEPER_DB` (a file, or a folder for
-`mediakeeper.db` in it) says otherwise. It is written as things happen, so
-nothing is lost when the server stops abruptly. To back it up while the
-server runs, use `sqlite3 mediakeeper.db ".backup copy.db"` rather than
-copying the file.
+The database is written as things happen, so nothing is lost when the server
+stops abruptly. To back it up while the server runs, use
+`sqlite3 mediakeeper.db ".backup copy.db"` rather than copying the file.
 
 ## Building from source
 

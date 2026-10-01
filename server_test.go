@@ -508,18 +508,18 @@ func TestDownloads(t *testing.T) {
 	}
 	// The fixture library already holds this double episode under its English
 	// name; the download is filed by the TMDB (Russian) one next to it.
-	ent := filepath.Join(s.root, showsFolder, "Звёздный путь - Энтерпрайз (2001)")
+	ent := filepath.Join(s.firstRoot(), showsFolder, "Звёздный путь - Энтерпрайз (2001)")
 	if d := byName["Star.Trek.Enterprise.s1e01-02.Broken.Bow.mkv"]; d.State != stateDone {
 		t.Errorf("episode: %+v", d)
 	}
 	if data, _ := os.ReadFile(filepath.Join(ent, "Season 01", "Звёздный путь - Энтерпрайз S01E01-E02 - Разорванный круг (1) + Разорванный круг (2).mkv")); string(data) != "video:Star.Trek.Enterprise.s1e01-02.Broken.Bow.mkv" {
-		t.Errorf("episode file: %q\n  %s", data, strings.Join(tree(t, s.root), "\n  "))
+		t.Errorf("episode file: %q\n  %s", data, strings.Join(tree(t, s.firstRoot()), "\n  "))
 	}
 	iron := byName["Iron.Man.2008.BDRip.mkv"]
 	if iron.State != stateDone {
 		t.Errorf("movie: %+v", iron)
 	}
-	if data, _ := os.ReadFile(filepath.Join(s.root, moviesFolder, "Железный человек (2008)", "Железный человек (2008).mkv")); string(data) != "video:Iron.Man.2008.BDRip.mkv" {
+	if data, _ := os.ReadFile(filepath.Join(s.firstRoot(), moviesFolder, "Железный человек (2008)", "Железный человек (2008).mkv")); string(data) != "video:Iron.Man.2008.BDRip.mkv" {
 		t.Errorf("movie file: %q", data)
 	}
 
@@ -554,10 +554,10 @@ func TestDownloads(t *testing.T) {
 			t.Errorf("after resolving: %+v", d)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(s.root, moviesFolder, "Мятеж (2025)", "Мятеж (2025).mkv")); err != nil {
-		t.Errorf("resolved movie is not in the library:\n  %s", strings.Join(tree(t, s.root), "\n  "))
+	if _, err := os.Stat(filepath.Join(s.firstRoot(), moviesFolder, "Мятеж (2025)", "Мятеж (2025).mkv")); err != nil {
+		t.Errorf("resolved movie is not in the library:\n  %s", strings.Join(tree(t, s.firstRoot()), "\n  "))
 	}
-	if left, _ := os.ReadDir(filepath.Join(s.root, incomingDir)); len(left) != 1 { // only downloads.json
+	if left, _ := os.ReadDir(filepath.Join(s.firstRoot(), incomingDir)); len(left) != 1 { // only downloads.json
 		t.Errorf("left in %s: %v", incomingDir, left)
 	}
 
@@ -642,8 +642,8 @@ func TestDownloadPreset(t *testing.T) {
 	if list[0].State != stateDone || len(list[0].Titles) != 1 || list[0].Titles[0].Title != "Мятеж" {
 		t.Errorf("after finishing: %+v", list[0])
 	}
-	if !exists(filepath.Join(s.root, moviesFolder, "Мятеж (2025)", "Мятеж (2025).mkv")) {
-		t.Errorf("not filed as said:\n  %s", strings.Join(tree(t, s.root), "\n  "))
+	if !exists(filepath.Join(s.firstRoot(), moviesFolder, "Мятеж (2025)", "Мятеж (2025).mkv")) {
+		t.Errorf("not filed as said:\n  %s", strings.Join(tree(t, s.firstRoot()), "\n  "))
 	}
 	// A second copy cannot be filed over the first: it waits, and does not
 	// claim the first one as its own.
@@ -671,7 +671,7 @@ func TestDownloadPreset(t *testing.T) {
 // but nothing is remembered for a guest and nothing can be changed.
 func TestGuests(t *testing.T) {
 	s, srv := serverFixture(t)
-	s.guests = true
+	s.live.cfg.Server.Guests = &[]bool{true}[0]
 	guest := newBrowser(t, srv, "")
 	var me struct {
 		Name  string

@@ -25,20 +25,21 @@ type Config struct {
 	Sources      []string     `yaml:"sources,omitempty" json:"sources,omitempty"` // order of priority
 	TMDBURL      string       `yaml:"tmdb_api_url,omitempty" json:"tmdb_api_url,omitempty"`
 	TMDBImageURL string       `yaml:"tmdb_image_url,omitempty" json:"tmdb_image_url,omitempty"`
-	Libraries    []Root       `yaml:"libraries,omitempty" json:"-"` // used when no folder is given on the command line
-	Server       ServerConfig `yaml:"server,omitempty" json:"-"`
+	Libraries    []Root       `yaml:"libraries,omitempty" json:"libraries,omitempty"` // used when no folder is given on the command line
+	LibrariesSet bool         `yaml:"-" json:"libraries_set,omitempty"`               // chosen once: none is a choice too
+	Server       ServerConfig `yaml:"server,omitempty" json:"server"`
 }
 
 // ServerConfig are the settings of -serve.
 type ServerConfig struct {
-	Name     string `yaml:"name,omitempty"`
-	Database string `yaml:"database,omitempty"` // the SQLite file of accounts and watch states
-	Cache    string `yaml:"cache,omitempty"`    // the folder of screenshots and episode stills
-	HWAccel  string `yaml:"hwaccel,omitempty"`  // a graphics card for conversions
-	Port     int    `yaml:"port,omitempty"`
-	DLNA     *bool  `yaml:"dlna,omitempty"`
-	Guests   *bool  `yaml:"guests,omitempty"`
-	NoTags   bool   `yaml:"no_tags,omitempty"`
+	Name     string `yaml:"name,omitempty" json:"name,omitempty"`
+	Database string `yaml:"database,omitempty" json:"-"`                // the SQLite file: only in config.yaml, never in the database
+	Cache    string `yaml:"cache,omitempty" json:"cache,omitempty"`     // the folder of screenshots and episode stills
+	HWAccel  string `yaml:"hwaccel,omitempty" json:"hwaccel,omitempty"` // a graphics card for conversions
+	Port     int    `yaml:"port,omitempty" json:"port,omitempty"`
+	DLNA     *bool  `yaml:"dlna,omitempty" json:"dlna,omitempty"`
+	Guests   *bool  `yaml:"guests,omitempty" json:"guests,omitempty"`
+	NoTags   bool   `yaml:"no_tags,omitempty" json:"no_tags,omitempty"`
 }
 
 // Where the settings live, in this order:

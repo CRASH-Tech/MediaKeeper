@@ -87,7 +87,7 @@ func TestLibrariesInSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, _, _ := loadConfig()
-	want := []Root{{"/srv/media", rootMixed}, {"/srv/films", rootMovies}, {"/srv/tv", rootShows}}
+	want := []Root{{Path: "/srv/media", Kind: rootMixed}, {Path: "/srv/films", Kind: rootMovies}, {Path: "/srv/tv", Kind: rootShows}}
 	if len(cfg.Libraries) != 3 || cfg.Libraries[0] != want[0] || cfg.Libraries[1] != want[1] || cfg.Libraries[2] != want[2] {
 		t.Fatalf("libraries: %+v", cfg.Libraries)
 	}
@@ -178,7 +178,7 @@ func TestServerWithSeveralFolders(t *testing.T) {
 	}
 
 	// New titles go to the folder of their kind.
-	a := &App{outSet: true, outRoots: s.roots}
+	a := &App{outSet: true, outRoots: s.libRoots()}
 	if got := a.category("", moviesFolder); got != films {
 		t.Errorf("a new movie goes to %s", got)
 	}

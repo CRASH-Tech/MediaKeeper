@@ -76,9 +76,31 @@ type Downloads struct {
 }
 
 func NewDownloads(s *Server) *Downloads {
-	d := &Downloads{s: s, dir: filepath.Join(s.root, incomingDir)}
-	d.load()
+	d := &Downloads{s: s}
+	d.folder()
 	return d
+}
+
+var errNoLibrary = errors.New("there is no library folder yet: add one under Settings")
+
+// folder is where downloads are kept: .incoming in the first library folder.
+// A library set up while the server runs gets it then. "" while there is
+// no library folder.
+func (d *Downloads) folder() string {
+	d.mu.Lock()
+	if d.dir != "" {
+		defer d.mu.Unlock()
+		return d.dir
+	}
+	root := d.s.firstRoot()
+	if root == "" {
+		d.mu.Unlock()
+		return ""
+	}
+	d.dir = filepath.Join(root, incomingDir)
+	d.mu.Unlock()
+	d.load()
+	return d.dir
 }
 
 func (d *Downloads) statePath() string { return filepath.Join(d.dir, "downloads.json") }
@@ -103,7 +125,7 @@ func (d *Downloads) save() {
 	d.mu.Lock()
 	data, _ := json.MarshalIndent(d.list, "", " ")
 	d.mu.Unlock()
-	if os.MkdirAll(d.dir, 0o755) == nil {
+	if d.folder() != "" && os.MkdirAll(d.dir, 0o755) == nil {
 		os.WriteFile(d.statePath(), data, 0o644)
 	}
 }
@@ -149,6 +171,9 @@ func (d *Downloads) Add(source string, torrent []byte) (*Download, error) {
 			return nil, errors.New("give a magnet link, an http(s) link or a .torrent file")
 		}
 		isTorrent = strings.HasSuffix(strings.ToLower(u.Path), ".torrent")
+	}
+	if d.folder() == "" {
+		return nil, errNoLibrary
 	}
 	if isTorrent {
 		if _, err := d.aria2(); err != nil {
@@ -453,12 +478,16 @@ var reSample = regexp.MustCompile(`(?i)(^|[^a-z])sample([^a-z]|$)`)
 // newApp makes an organizer for a download folder: everything it
 // identifies goes into the library.
 func (d *Downloads) newApp(dl *Download, out *bytes.Buffer) (*App, error) {
-	providers, _, err := buildProviders(d.s.cfg)
+	providers, _, err := buildProviders(d.s.config())
 	if err != nil {
 		return nil, err
 	}
 	ui := NewUI(strings.NewReader(""), out)
-	a := &App{ui: ui, root: dl.dir, out: d.s.root, outSet: true, outRoots: d.s.roots, yes: true, noTags: d.s.noTags, noJournal: true}
+	roots := d.s.libRoots()
+	if len(roots) == 0 {
+		return nil, errNoLibrary
+	}
+	a := &App{ui: ui, root: dl.dir, out: roots[0].Path, outSet: true, outRoots: roots, yes: true, noTags: d.s.tagsOff(), noJournal: true}
 	// A new hub every time: a source that was unreachable an hour ago gets
 	// another chance.
 	a.hub = NewHub(providers, func(name, reason string) { ui.Printf("(source %s is off: %s)\n", name, reason) })
@@ -640,7 +669,7 @@ func guessUnit(name string) *Unit {
 
 // searcher is an organizer that only searches the sources.
 func (d *Downloads) searcher(out *bytes.Buffer) (*App, error) {
-	providers, _, err := buildProviders(d.s.cfg)
+	providers, _, err := buildProviders(d.s.config())
 	if err != nil {
 		return nil, err
 	}

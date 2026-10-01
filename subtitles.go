@@ -140,7 +140,7 @@ func (s *Server) embeddedSubtitle(it *CatItem, stream int) (string, error) {
 		return "", errNotFound
 	}
 	sum := md5.Sum([]byte(fmt.Sprintf("%s|%d|%d", it.Path, it.Size, it.ModTime.UnixNano())))
-	dir := filepath.Join(s.cacheDir, "subtitles", hex.EncodeToString(sum[:8]))
+	dir := filepath.Join(s.cacheRoot(), "subtitles", hex.EncodeToString(sum[:8]))
 	file := filepath.Join(dir, fmt.Sprintf("%d.srt", stream))
 	if data, err := os.ReadFile(file); err == nil {
 		return string(data), nil

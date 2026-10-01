@@ -657,7 +657,7 @@ func (s *Server) metaAPI(w http.ResponseWriter, r *http.Request, id, part string
 // retag writes the description into the file's tags in the background and
 // tells whether it started (not with -no-tags, not twice at once).
 func (s *Server) retag(it *CatItem, n *xmlNode, cover string) bool {
-	if s.noTags {
+	if s.tagsOff() {
 		return false
 	}
 	if cover == "" {

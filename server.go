@@ -27,17 +27,13 @@ var webFiles embed.FS
 // API, the Jellyfin-compatible API for native clients, and (unless switched
 // off) the DLNA media server.
 type Server struct {
-	roots    []Root     // the folders of the library
-	root     string     // the first of them, which also holds the downloads
-	cacheDir string     // generated images: screenshots, episode stills
-	hw       *hwAccel   // the graphics card that converts, nil for the processor
-	hwBad    hwFailures // files the card could not convert
+	live     liveSettings // the settings in force; they change while it runs (settings.go)
+	changing sync.Mutex   // one change of the settings at a time
+	setupMu  sync.Mutex   // one first-start setup at a time
+	dbPath   string
+	port     int // the port it listens on
+	hwBad    hwFailures
 	subs     subtitleCache
-	name     string
-	port     int
-	cfg      Config
-	noTags   bool
-	guests   bool // the web interface can be watched without signing in
 	log      func(format string, args ...any)
 
 	prober *prober
@@ -61,7 +57,9 @@ type Server struct {
 
 // ServerOptions are the command-line choices for -serve.
 type ServerOptions struct {
-	Debug    bool // log what the Jellyfin apps ask and get (jellyfin-debug.log)
+	Auth     *Auth             // the database, if open already
+	Locked   map[string]string // settings a flag or a variable sets: not changed in the web interface
+	Debug    bool              // log what the Jellyfin apps ask and get (jellyfin-debug.log)
 	Roots    []Root
 	Database string // the SQLite file of accounts and watch states; "" for the default
 	Cache    string // the folder of generated images; "" for .cache in the first folder
@@ -78,32 +76,42 @@ func NewServer(o ServerOptions, log func(string, ...any)) (*Server, error) {
 	if o.Database == "" {
 		o.Database = databasePath("", "")
 	}
-	auth, err := OpenAuth(o.Database, filepath.Join(filepath.Dir(configPath()), "server.json"))
-	if err != nil {
-		return nil, err
+	auth := o.Auth
+	if auth == nil {
+		var err error
+		if auth, err = OpenAuth(o.Database, filepath.Join(filepath.Dir(configPath()), "server.json")); err != nil {
+			return nil, err
+		}
 	}
-	if len(o.Roots) == 0 {
-		return nil, errors.New("no library folders")
-	}
-	s := &Server{roots: o.Roots, root: o.Roots[0].Path, name: o.Name, port: o.Port, cfg: o.Config, noTags: o.NoTags, guests: o.Guests, log: log,
+	var err error
+	s := &Server{dbPath: o.Database, port: o.Port, log: log,
 		prober: newProber(), auth: auth, transcodes: make(chan struct{}, 2), failures: map[string][]time.Time{}}
-	s.cacheDir = o.Cache
-	if s.cacheDir == "" {
-		s.cacheDir = filepath.Join(o.Roots[0].Path, ".cache")
+	// The settings in force: what the caller worked out (saved settings,
+	// flags, variables), with defaults.
+	cfg := o.Config
+	cfg.Libraries = keyed(o.Roots)
+	cfg.Server.Name, cfg.Server.Port, cfg.Server.NoTags = o.Name, o.Port, o.NoTags
+	cfg.Server.DLNA, cfg.Server.Guests = &o.DLNA, &o.Guests
+	cfg.Server.Cache, cfg.Server.HWAccel = o.Cache, o.HWAccel
+	s.live.cfg, s.live.locked, s.live.dataDir = withDefaults(cfg), o.Locked, filepath.Dir(o.Database)
+	if s.live.locked == nil {
+		s.live.locked = map[string]string{}
 	}
+	roots := existingRoots(cfg.Libraries, log)
+	s.live.roots, s.live.cacheDir = roots, s.resolveCache(o.Cache, roots)
 	s.ffmpeg, _ = exec.LookPath("ffmpeg")
-	s.hw = detectHW(s.ffmpeg, o.HWAccel, log)
+	s.live.hw = detectHW(s.ffmpeg, o.HWAccel, log)
 	if o.Debug {
 		if s.debug, err = openDebugLog(); err != nil {
 			return nil, err
 		}
 	}
-	s.lib = NewLibrary(o.Roots, s.prober)
+	s.lib = NewLibrary(roots, s.prober)
 	if _, err := s.lib.Catalog(); err != nil {
 		return nil, err
 	}
 	if o.DLNA {
-		if s.dlna, err = newDLNAServer(o.Roots, o.Name, o.Port, log, s.prober); err != nil {
+		if s.dlna, err = newDLNAServer(roots, auth.ServerID, o.Name, o.Port, log, s.prober); err != nil {
 			return nil, err
 		}
 	}
@@ -225,10 +233,14 @@ func viewing(it *CatItem) Viewing {
 
 // rootFor is the library folder a file lies in.
 func (s *Server) rootFor(path string) Root {
-	if r, ok := rootOf(s.roots, path); ok {
+	roots := s.libRoots()
+	if r, ok := rootOf(roots, path); ok {
 		return r
 	}
-	return s.roots[0]
+	if len(roots) == 0 {
+		return Root{Path: filepath.Dir(path)}
+	}
+	return roots[0]
 }
 
 // refresh makes the catalogue and the DLNA tree show a change at once.
@@ -414,34 +426,20 @@ func (s *Server) serveVideo(w http.ResponseWriter, r *http.Request, it *CatItem,
 	http.ServeContent(w, r, "", it.ModTime, f)
 }
 
-// ensureAdmin makes sure somebody can sign in. The administrator comes
-// from MEDIAKEEPER_ADMIN and MEDIAKEEPER_ADMIN_PASSWORD (which also resets
-// a forgotten password); on the very first start a password is generated
-// and shown once.
-func (s *Server) ensureAdmin(ui *UI) error {
+// ensureAdmin makes the administrator given by MEDIAKEEPER_ADMIN and
+// MEDIAKEEPER_ADMIN_PASSWORD (which also resets a forgotten password). It
+// says whether there is no account at all: the web interface then sets the
+// server up, starting with the administrator.
+func (s *Server) ensureAdmin() (setup bool, err error) {
 	name := os.Getenv("MEDIAKEEPER_ADMIN")
 	if name == "" {
 		name = "admin"
 	}
 	if password := os.Getenv("MEDIAKEEPER_ADMIN_PASSWORD"); password != "" {
 		_, err := s.auth.SetUser(name, password, true)
-		return err
+		return false, err
 	}
-	if s.auth.HasUsers() {
-		return nil
-	}
-	password := randomHex(6)
-	if _, err := s.auth.SetUser(name, password, true); err != nil {
-		return err
-	}
-	ui.Box("Administrator account created", []string{
-		"User:     " + name,
-		"Password: " + password,
-		"",
-		"It is shown only now. Change it in the web interface (Users), or set",
-		"MEDIAKEEPER_ADMIN_PASSWORD to choose your own.",
-	})
-	return nil
+	return !s.auth.HasUsers(), nil
 }
 
 // Serve runs the server until the program is interrupted.
@@ -456,7 +454,8 @@ func Serve(ui *UI, o ServerOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := s.ensureAdmin(ui); err != nil {
+	setup, err := s.ensureAdmin()
+	if err != nil {
 		return err
 	}
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", o.Port))
@@ -471,13 +470,16 @@ func Serve(ui *UI, o ServerOptions) error {
 	for _, show := range cat.Shows {
 		episodes += len(show.Episodes())
 	}
-	if len(o.Roots) == 1 {
+	switch roots := s.libRoots(); len(roots) {
+	case 0:
+		ui.Printf("MediaKeeper server %s: no library folders yet\n", ui.Bold(`"`+s.serverName()+`"`))
+	case 1:
 		ui.Printf("MediaKeeper server %s: %d movie(s), %d series, %d episode(s) from %s\n",
-			ui.Bold(`"`+o.Name+`"`), len(cat.Movies), len(cat.Shows), episodes, o.Roots[0])
-	} else {
+			ui.Bold(`"`+s.serverName()+`"`), len(cat.Movies), len(cat.Shows), episodes, roots[0])
+	default:
 		ui.Printf("MediaKeeper server %s: %d movie(s), %d series, %d episode(s) from\n",
-			ui.Bold(`"`+o.Name+`"`), len(cat.Movies), len(cat.Shows), episodes)
-		for _, r := range o.Roots {
+			ui.Bold(`"`+s.serverName()+`"`), len(cat.Movies), len(cat.Shows), episodes)
+		for _, r := range roots {
 			ui.Printf("  %s\n", r)
 		}
 	}
@@ -486,6 +488,13 @@ func Serve(ui *UI, o ServerOptions) error {
 		ui.Printf("  http://%s:%d/  (%s)\n", i.ip, o.Port, i.ifi.Name)
 	}
 	ui.Printf("Open the address in a browser, or add it as a server in a Jellyfin app.\n")
+	if setup {
+		ui.Box("First start", []string{
+			"There is no account yet. Open the address above in a browser: it",
+			"asks for the administrator, the library folders and the rest.",
+			"(Or start with MEDIAKEEPER_ADMIN_PASSWORD to make the account.)",
+		})
+	}
 	if s.debug != nil {
 		ui.Printf("%s\n", ui.Yellow("Debug: every request of a Jellyfin app is logged here, and in full in "+s.debug.path))
 	}

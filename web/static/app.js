@@ -62,6 +62,11 @@ const fullTitle = x => x.localTitle && !sameText(x.localTitle, x.title) ? `${x.t
 window.addEventListener("hashchange", render);
 
 async function start() {
+  // The first start: no account yet, the server is set up here.
+  try {
+    const setup = await api("setup");
+    if (setup.needed) return renderSetup(setup);
+  } catch { /* an older server: no setup */ }
   try { me = await api("me"); } catch { me = null; }
   render();
 }
@@ -86,7 +91,8 @@ async function render() {
     case "show": return renderShow(arg);
     case "browse": return backAtTitle(renderBrowse(arg, decodeURIComponent(rest.join("/")), query));
     case "downloads": return me.admin ? renderDownloads() : (location.hash = "#movies");
-    case "users": return me.admin ? renderUsers() : (location.hash = "#movies");
+    case "settings": return me.admin ? renderSettings(arg) : (location.hash = "#movies");
+    case "users": return (location.hash = me.admin ? "#settings/users" : "#movies");
     case "mine": return me.guest ? (location.hash = "#login") : renderMine(arg || "continue");
     default: return backAtTitle(renderList("movies", library.movies, query));
   }
@@ -98,6 +104,9 @@ const icons = {
   shows: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="3"/><path d="M8 21h8M9 2l3 4 3-4"/></svg>',
   downloads: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"/></svg>',
   users: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
+  settings: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/><circle cx="12" cy="12" r="6.5"/></svg>',
+  folder: '<svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2.5h6.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></svg>',
+  up: '<svg viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>',
   play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" fill="currentColor" stroke="none"/></svg>',
   fullscreen: '<svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>',
   mine: '<svg viewBox="0 0 24 24"><path d="M6.5 3.5h11v17l-5.5-4-5.5 4z"/></svg>',
@@ -147,7 +156,7 @@ function shell(page, ...content) {
   const sections = cls => h("nav", { class: cls },
     link("movies", "Movies"), link("shows", "Shows"), !me.guest && link("mine", "My"),
     me.admin && link("downloads", "Downloads", h("span", { class: "badge hidden attention" })),
-    me.admin && link("users", "Users"));
+    me.admin && link("settings", "Settings"));
   const search = h("input", {
     type: "search", placeholder: "Search", "aria-label": "Search", value: searchTerm,
     oninput: () => { searchTerm = search.value; applySearch(); },
@@ -224,6 +233,10 @@ function progressBar(x) {
 
 function grid(items, emptyText) {
   if (!items.length) {
+    if (!emptyText && library && library.folders === 0) {
+      return h("div", { class: "empty" }, "There is no library folder yet.",
+        me.admin && h("p", {}, h("a", { href: "#settings/library" }, "Choose the folders of films and series")));
+    }
     return h("div", { class: "empty" }, emptyText || "Nothing here yet.",
       me.admin && !emptyText && h("p", {}, h("a", { href: "#downloads" }, "Download something")));
   }
@@ -886,7 +899,6 @@ function openEdit(x, opts = {}) {
     tabBar.replaceChildren(...tabs.map(([tab, label]) => h("button", { class: tab === current ? "active" : "", onclick: () => choose(tab) }, label)));
     body.replaceChildren({ details: detailsTab, images: imagesTab, episodes: episodesTab }[id]());
   };
-  const field = (label, input) => h("label", { class: "field" }, h("span", {}, label), input);
   const text = (value, attrs) => h("input", { type: "text", value: value || "", ...attrs });
   // upload sends a picture chosen in a file field, then shows it in place.
   const upload = async (input, part, preview, src) => {
@@ -1481,20 +1493,217 @@ async function renderDownloads() {
   pollTimer = setInterval(refresh, 2000);
 }
 
-// ------------------------------------------------------------------ users
+// --------------------------------------------------------------- settings
 
-async function renderUsers() {
+// fill puts children in place of an element's own, as h() takes them.
+const fill = (el, ...children) => { el.replaceChildren(...children.flat(3).filter(c => c != null && c !== false)); return el; };
+const field = (label, input, note) => h("label", { class: "field" }, h("span", {}, label), input, note && h("small", { class: "dim" }, note));
+const joinPath = (dir, name) => dir.endsWith("/") ? dir + name : dir + "/" + name;
+const rootKinds = [["", "Movies and shows"], ["movies", "Movies"], ["shows", "Shows"]];
+
+// folderPicker walks the server's folders to choose one: the server, not
+// the browser, has to read the library.
+function folderPicker(startAt, choose) {
+  const error = h("p", { class: "error" });
+  const where = h("input", { type: "text", "aria-label": "Folder", spellcheck: false, autocomplete: "off" });
+  const list = h("div", { class: "folders" });
+  const note = h("p", { class: "dim" });
+  const close = () => box.remove();
+  const open = async path => {
+    error.textContent = "";
+    try {
+      const d = await api("settings/folders?path=" + encodeURIComponent(path || ""));
+      where.value = d.path;
+      fill(list,
+        d.parent && h("button", { type: "button", class: "folder", onclick: () => open(d.parent) }, icon("up"), "Up"),
+        d.folders.map(f => h("button", { type: "button", class: "folder", onclick: () => open(joinPath(d.path, f)) }, icon("folder"), f)),
+        !d.folders.length && h("p", { class: "dim" }, "No folders inside."));
+      note.textContent = d.writable ? "" : "The server can read this folder but not write to it: downloads cannot be put here, and changes to descriptions stay in its own database.";
+    } catch (err) { error.textContent = err.message; }
+  };
+  const box = h("div", { class: "modal", onclick: e => { if (e.target === box) close(); } },
+    h("div", { class: "panel glass sheet picker" },
+      h("div", { class: "row" }, h("h2", { class: "grow", style: "margin:0" }, "Choose a folder"), h("button", { class: "small", type: "button", onclick: close }, "Close")),
+      h("form", { class: "row where", onsubmit: e => { e.preventDefault(); open(where.value); } }, where, h("button", { class: "small" }, "Go")),
+      list, note, error,
+      h("div", { class: "row end" }, h("button", { class: "primary", type: "button", onclick: () => { close(); choose(where.value); } }, "Use this folder"))));
+  document.body.append(box);
+  open(startAt);
+}
+
+// folderEditor edits a list of library folders in place: each with what it
+// holds; the first one also takes the downloads.
+function folderEditor(roots, disabled) {
+  const box = h("div", { class: "roots" });
+  const draw = () => fill(box,
+    roots.length ? roots.map((r, i) => h("div", { class: "root-row" },
+      h("div", { class: "root-path" }, h("span", {}, r.path),
+        r.missing && h("small", { class: "error" }, "not there now"),
+        i === 0 && roots.length > 1 && h("small", { class: "dim" }, "downloads go here")),
+      h("select", { "aria-label": "What it holds", disabled, onchange: e => { r.kind = e.target.value; } },
+        rootKinds.map(([k, label]) => h("option", { value: k, selected: (r.kind || "") === k }, label))),
+      !disabled && i > 0 && h("button", { type: "button", class: "small", title: "Move up", onclick: () => { roots.splice(i - 1, 0, ...roots.splice(i, 1)); draw(); } }, "↑"),
+      !disabled && h("button", { type: "button", class: "small danger", onclick: () => { roots.splice(i, 1); draw(); } }, "Remove")))
+      : h("p", { class: "dim" }, "No folders yet."),
+    !disabled && h("button", { type: "button", onclick: () => folderPicker(roots.length ? roots[roots.length - 1].path.replace(/\/[^/]+\/?$/, "") || "/" : "", path => {
+      if (!roots.some(r => r.path === path)) roots.push({ path, kind: "" });
+      draw();
+    }) }, "+ Add a folder"));
+  draw();
+  return box;
+}
+
+// keyInput is an API key field: a key that is set is not sent back to the
+// browser; typing replaces it, the button removes it.
+function keyInput(state, change) {
+  const input = h("input", { type: "password", autocomplete: "off", spellcheck: false,
+    placeholder: state.set ? `set, ends with …${state.end}` : "not set", oninput: () => change(input.value.trim() || undefined) });
+  return input;
+}
+
+function lockedNote(locked, key) {
+  return locked[key] && h("small", { class: "locked" }, `Set by ${locked[key]}: change it there.`);
+}
+
+async function renderSettings(tab) {
+  const tabs = [["library", "Library"], ["metadata", "Descriptions"], ["server", "Server"], ["users", "Users"]];
+  if (!tabs.some(([id]) => id === tab)) tab = "library";
+  const bar = h("div", { class: "tabs" }, tabs.map(([id, label]) => h("button", { class: id === tab ? "active" : "", onclick: () => { location.hash = "#settings/" + id; } }, label)));
+  const body = h("div", {});
+  shell("settings", h("div", { class: "settings" }, h("h1", { class: "page-title" }, "Settings"), scrollingTabs(bar), body));
+  if (tab === "users") return usersPanel(body);
+  let view;
+  try { view = await api("settings"); } catch (err) { return body.replaceChildren(h("p", { class: "error" }, err.message)); }
+  const draw = { library: libraryTab, metadata: metadataTab, server: serverTab }[tab];
+  body.replaceChildren(draw(view, async change => {
+    const restart = await api("settings", { json: change });
+    library = null;
+    toast(restart.restart && restart.restart.length ? `Saved. Restart the server for ${restart.restart.join(" and ")} to change.` : "Saved.");
+    return restart;
+  }));
+}
+
+// saveRow is a Save button that sends what a tab gathered and shows errors.
+function saveRow(gather, save, after) {
+  const error = h("p", { class: "error" });
+  const button = h("button", { class: "primary", type: "button", onclick: async () => {
+    error.textContent = "";
+    button.disabled = true;
+    try { const view = await save(gather()); if (after) after(view); } catch (err) { error.textContent = err.message; }
+    button.disabled = false;
+  } }, "Save");
+  return h("div", { class: "row save-row" }, button, error);
+}
+
+function libraryTab(view, save) {
+  const roots = view.libraries.map(r => ({ ...r }));
+  const locked = view.locked["libraries"];
+  return h("div", { class: "panel glass" },
+    h("h2", { style: "margin-top:0" }, "Library folders"),
+    h("p", { class: "dim" }, "The folders of films and series on the server. A folder of movies or of shows holds only those, each title in its own folder; a mixed one is sorted into Movies and Shows inside. Changes show in the library at once."),
+    lockedNote(view.locked, "libraries"),
+    folderEditor(roots, !!locked),
+    !locked && saveRow(() => ({ libraries: roots.map(({ path, kind }) => ({ path, kind })) }), save, render));
+}
+
+function metadataTab(view, save) {
+  const change = {};
+  const keys = [
+    ["tmdbKey", "tmdb_api_key", "TMDB key", "themoviedb.org → Settings → API: descriptions, posters, cast in your language."],
+    ["omdbKey", "omdb_api_key", "OMDb key", "omdbapi.com: IMDb ratings and descriptions in English."],
+    ["kinopoiskKey", "kinopoisk_api_key", "Kinopoisk key", "kinopoiskapiunofficial.tech: Russian titles and descriptions."]];
+  const keyFields = keys.map(([name, lock, label, note]) => {
+    const input = keyInput(view[name], v => { if (v === undefined) delete change[name]; else change[name] = v; });
+    input.disabled = !!view.locked[lock];
+    const remove = view[name].set && !view.locked[lock] && h("button", { type: "button", class: "small danger", onclick: async () => {
+      if (!confirm(`Remove the ${label}?`)) return;
+      try { await save({ [name]: "" }); render(); } catch (err) { toast(err.message); }
+    } }, "Remove");
+    return field(label, h("div", { class: "row" }, h("div", { class: "grow" }, input), remove), lockedNote(view.locked, lock) || note);
+  });
+  const language = h("input", { type: "text", value: view.language, placeholder: "en-US", disabled: !!view.locked.language, oninput: () => { change.language = language.value; } });
+
+  // The sources in the order they are asked, each on or off.
+  const known = new Map(view.allSources.map(s => [s.key, s]));
+  let order = [...view.sources, ...view.allSources.map(s => s.key).filter(k => !view.sources.includes(k))];
+  const on = new Set(view.sources);
+  const sourcesLocked = !!view.locked.sources;
+  const sourceList = h("div", { class: "sources" });
+  const drawSources = () => sourceList.replaceChildren(...order.map((k, i) => {
+    const s = known.get(k);
+    const key = { tmdb: "tmdbKey", omdb: "omdbKey", kinopoisk: "kinopoiskKey" }[k];
+    return h("div", { class: "source-row" + (on.has(k) ? "" : " off") },
+      h("label", {}, h("input", { type: "checkbox", checked: on.has(k), disabled: sourcesLocked, onchange: e => {
+        e.target.checked ? on.add(k) : on.delete(k); change.sources = order.filter(x => on.has(x)); drawSources();
+      } }), " ", s.name),
+      key && !view[key].set && h("small", { class: "dim" }, "needs a key"),
+      h("span", { class: "spacer" }),
+      !sourcesLocked && i > 0 && h("button", { type: "button", class: "small", title: "Ask earlier", onclick: () => {
+        order.splice(i - 1, 0, ...order.splice(i, 1)); change.sources = order.filter(x => on.has(x)); drawSources();
+      } }, "↑"));
+  }));
+  drawSources();
+  const tmdbUrl = h("input", { type: "text", value: view.tmdbUrl || "", placeholder: "https://api.themoviedb.org/3", oninput: () => { change.tmdbUrl = tmdbUrl.value; } });
+  const tmdbImageUrl = h("input", { type: "text", value: view.tmdbImageUrl || "", placeholder: "https://image.tmdb.org/t/p", oninput: () => { change.tmdbImageUrl = tmdbImageUrl.value; } });
+  return h("div", {},
+    h("div", { class: "panel glass" },
+      h("h2", { style: "margin-top:0" }, "Catalogue keys"),
+      h("p", { class: "dim" }, "Descriptions, posters and ratings come from these catalogues. A key that is set is not shown again: type a new one to replace it."),
+      keyFields,
+      field("Language", language, lockedNote(view.locked, "language") || "Of titles and descriptions, as en-US or ru-RU.")),
+    h("div", { class: "panel glass" },
+      h("h2", { style: "margin-top:0" }, "Sources"),
+      h("p", { class: "dim" }, "Asked in this order: the first that knows a title describes it, the others fill in what it lacks."),
+      lockedNote(view.locked, "sources"), sourceList,
+      h("details", { class: "advanced" }, h("summary", {}, "Where TMDB is reached (for a proxy)"),
+        field("TMDB API", tmdbUrl), field("TMDB images", tmdbImageUrl))),
+    saveRow(() => change, save, render));
+}
+
+function serverTab(view, save) {
+  const change = {};
+  const lock = key => !!view.locked[key];
+  const text = (key, name, value, attrs) => {
+    const input = h("input", { type: "text", value: value ?? "", disabled: lock(key), ...attrs, oninput: () => { change[name] = attrs && attrs.type === "number" ? Number(input.value) : input.value; } });
+    return input;
+  };
+  const check = (key, name, value, label, note) => h("div", { class: "toggle" },
+    h("label", {}, h("input", { type: "checkbox", checked: value, disabled: lock(key), onchange: e => { change[name] = e.target.checked; } }), " ", label),
+    lockedNote(view.locked, key) || (note && h("small", { class: "dim" }, note)));
+  const hw = h("select", { disabled: lock("server.hwaccel"), onchange: () => { change.hwaccel = hw.value; } },
+    [["", "None: the processor"], ["auto", "Find a graphics card"], ["vaapi", "VA-API (Intel, AMD)"], ["qsv", "Quick Sync (Intel)"], ["nvenc", "NVENC (NVIDIA)"]]
+      .map(([v, label]) => h("option", { value: v, selected: (view.hwaccel === "none" ? "" : view.hwaccel || "").split(":")[0] === v }, label)));
+  return h("div", {},
+    h("div", { class: "panel glass" },
+      h("h2", { style: "margin-top:0" }, "Server"),
+      field("Name", text("server.name", "name", view.name), lockedNote(view.locked, "server.name") || "Shown in the header, in Jellyfin apps and on the TV."),
+      field("Port", text("server.port", "port", view.port, { type: "number", min: 1, max: 65535 }), lockedNote(view.locked, "server.port") || "Takes a restart."),
+      check("server.guests", "guests", view.guests, "Watching without signing in", "Anyone who opens the address can watch; managing still takes an account."),
+      check("server.dlna", "dlna", view.dlna, "DLNA for TVs", "TVs on the local network find the library by themselves; DLNA has no login. Takes a restart."),
+      check("server.no_tags", "tags", view.tags, "Write tags into downloaded files", "Title, year and poster inside the file, for other players.")),
+    h("div", { class: "panel glass" },
+      h("h2", { style: "margin-top:0" }, "Conversion"),
+      field("Hardware conversion", hw, lockedNote(view.locked, "server.hwaccel") || `In use now: ${view.hwInUse}. Without a card that works, the processor converts.`),
+      field("Folder of screenshots and stills", text("server.cache", "cache", view.cache, { placeholder: view.cacheDir, spellcheck: false }),
+        lockedNote(view.locked, "server.cache") || `Now: ${view.cacheDir}. Empty: .cache in the first library folder.`),
+      h("p", { class: "dim", style: "margin-bottom:0" }, `The settings are kept in ${view.database}.`)),
+    saveRow(() => change, save, render));
+}
+
+// usersPanel lists the accounts: who watches and who manages.
+async function usersPanel(body) {
   const error = h("p", { class: "error" });
   const name = h("input", { type: "text", placeholder: "Name", "aria-label": "Name", autocomplete: "off" });
   const pass = h("input", { type: "password", placeholder: "Password", "aria-label": "Password", autocomplete: "new-password" });
   const admin = h("input", { type: "checkbox", id: "admin" });
-  const save = async body => {
+  const again = () => usersPanel(body);
+  const save = async user => {
     error.textContent = "";
-    try { await api("users", { json: body }); renderUsers(); } catch (err) { error.textContent = err.message; }
+    try { await api("users", { json: user }); again(); } catch (err) { error.textContent = err.message; }
   };
   let users = [];
   try { users = await api("users"); } catch (err) { error.textContent = err.message; }
-  shell("users",
+  body.replaceChildren(
     h("div", { class: "panel glass" },
       h("table", {},
         h("tr", {}, h("th", {}, "User"), h("th", {}, "Role"), h("th", {})),
@@ -1506,7 +1715,7 @@ async function renderUsers() {
             u.id !== me.id && h("button", { class: "small", onclick: () => save({ name: u.name, password: "", admin: !u.admin }) }, u.admin ? "Make a viewer" : "Make an administrator"),
             u.id !== me.id && h("button", {
               class: "small danger",
-              onclick: async () => { if (confirm(`Delete ${u.name}?`)) { try { await api("users/" + u.id, { method: "DELETE" }); renderUsers(); } catch (err) { error.textContent = err.message; } } },
+              onclick: async () => { if (confirm(`Delete ${u.name}?`)) { try { await api("users/" + u.id, { method: "DELETE" }); again(); } catch (err) { error.textContent = err.message; } } },
             }, "Delete"))))))),
     h("form", { class: "panel glass", onsubmit: e => { e.preventDefault(); save({ name: name.value, password: pass.value, admin: admin.checked }); } },
       h("h2", { style: "margin-top:0" }, "Add a user"),
@@ -1515,4 +1724,69 @@ async function renderUsers() {
       error));
 }
 
+// ------------------------------------------------------------------ setup
+
+// renderSetup is the first start: there is no account yet. Three steps: the
+// administrator, the library folders, the name and the catalogue keys.
+function renderSetup(state) {
+  document.title = "MediaKeeper";
+  const data = { user: "admin", password: "", repeat: "", roots: state.libraries || [],
+    name: state.name || "MediaKeeper", language: state.language || "en-US", tmdbKey: "", omdbKey: "", kinopoiskKey: "" };
+  let step = 0;
+  const error = h("p", { class: "error" });
+  const card = h("form", { class: "setup glass", onsubmit: e => { e.preventDefault(); next(); } });
+  const input = (name, attrs) => h("input", { value: data[name], ...attrs, oninput: e => { data[name] = e.target.value; } });
+  const steps = [
+    () => [h("h2", {}, "The administrator"),
+      h("p", { class: "dim" }, "Welcome to MediaKeeper. First, the account that manages the server: downloads, descriptions, settings, other users."),
+      field("Name", input("user", { type: "text", autocomplete: "username", required: true })),
+      field("Password", input("password", { type: "password", autocomplete: "new-password", required: true, minLength: 4 })),
+      field("The password again", input("repeat", { type: "password", autocomplete: "new-password", required: true }))],
+    () => [h("h2", {}, "The library"),
+      h("p", { class: "dim" }, "The folders of films and series on the server. You can add them later as well, under Settings."),
+      state.librariesLocked && h("p", { class: "locked" }, `Set by ${state.librariesLocked}: change them there.`),
+      folderEditor(data.roots, !!state.librariesLocked)],
+    () => [h("h2", {}, "Descriptions"),
+      h("p", { class: "dim" }, "Posters, descriptions and ratings come from online catalogues. Without keys the free ones are used (TVMaze, Wikidata); keys can be added later under Settings."),
+      field("Server name", input("name", { type: "text", required: true })),
+      field("Language", input("language", { type: "text", placeholder: "en-US" }), "Of titles and descriptions, as en-US or ru-RU."),
+      field("TMDB key", input("tmdbKey", { type: "password", autocomplete: "off" }), "themoviedb.org → Settings → API: the best source."),
+      field("OMDb key", input("omdbKey", { type: "password", autocomplete: "off" }), "omdbapi.com: IMDb ratings."),
+      field("Kinopoisk key", input("kinopoiskKey", { type: "password", autocomplete: "off" }), "kinopoiskapiunofficial.tech: Russian titles.")],
+  ];
+  const draw = () => {
+    error.textContent = "";
+    fill(card,
+      h("div", { class: "setup-head" }, h("h1", {}, "MediaKeeper"),
+        h("div", { class: "dots" }, steps.map((_, i) => h("span", { class: i === step ? "on" : i < step ? "done" : "" })))),
+      steps[step](),
+      error,
+      h("div", { class: "row setup-buttons" },
+        step > 0 && h("button", { type: "button", onclick: () => { step--; draw(); } }, "Back"),
+        h("span", { class: "spacer" }),
+        h("button", { class: "primary" }, step < steps.length - 1 ? "Next" : "Finish")));
+    const first = card.querySelector("input");
+    if (first) first.focus();
+  };
+  const next = async () => {
+    if (step === 0 && data.password !== data.repeat) return (error.textContent = "The passwords differ.");
+    if (step < steps.length - 1) { step++; return draw(); }
+    const button = card.querySelector("button.primary");
+    button.disabled = true;
+    try {
+      const body = { user: data.user.trim(), password: data.password, name: data.name, language: data.language };
+      if (!state.librariesLocked) body.libraries = data.roots.map(({ path, kind }) => ({ path, kind }));
+      for (const k of ["tmdbKey", "omdbKey", "kinopoiskKey"]) if (data[k].trim()) body[k] = data[k].trim();
+      me = await api("setup", { json: body });
+      library = null;
+      location.hash = data.roots.length ? "#movies" : "#settings/library";
+      render();
+    } catch (err) {
+      error.textContent = err.message;
+      button.disabled = false;
+    }
+  };
+  app.replaceChildren(card);
+  draw();
+}
 start();

@@ -47,7 +47,7 @@ func TestHWConversion(t *testing.T) {
 		"qsv":   {"-hwaccel qsv", "vpp_qsv", "h264_qsv"},
 		"nvenc": {"-hwaccel cuda", "scale_cuda", "h264_nvenc", "-forced-idr 1"},
 	} {
-		s.hw = &hwAccel{method: method, device: "/dev/dri/renderD128"}
+		s.live.hw = &hwAccel{method: method, device: "/dev/dri/renderD128"}
 		conv := s.convertArgs(it, convertOptions{hls: true, burn: -1})
 		joined := strings.Join(append(conv.input, conv.output...), " ")
 		for _, w := range want {
@@ -79,8 +79,8 @@ func TestHWFallback(t *testing.T) {
 	}
 	s, srv := serverFixture(t)
 	s.ffmpeg, s.prober.tool = ffmpeg, ffprobe
-	s.hw = &hwAccel{method: "vaapi", device: "/dev/null"} // a card that fails at once
-	avi := filepath.Join(s.root, "Old (1999)", "Old (1999).avi")
+	s.live.hw = &hwAccel{method: "vaapi", device: "/dev/null"} // a card that fails at once
+	avi := filepath.Join(s.firstRoot(), "Old (1999)", "Old (1999).avi")
 	os.MkdirAll(filepath.Dir(avi), 0o755)
 	if out, err := exec.Command(ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=d=12:s=320x240:r=25", "-c:v", "mpeg4", avi).CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)

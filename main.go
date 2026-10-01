@@ -150,11 +150,13 @@ func run(args []string, in io.Reader, out io.Writer) error {
 			return err
 		}
 	}
-	cfg, hasConfig, err := loadConfig()
+	// config.yaml says where the database is; settings found in it go into
+	// the database, which holds them all (settings.go).
+	fileCfg, _, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	set := map[string]bool{} // flags given on the command line win over the settings file
+	set := map[string]bool{} // flags given on the command line win over the settings
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	if *showVersion {
 		fmt.Fprintln(out, "mediakeeper", version)
@@ -162,13 +164,37 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	}
 
 	ui := NewUI(in, out)
-	if *setup {
-		return askKeys(ui, &cfg)
-	}
-
-	roots, err := libraryRoots(cfg, folders, given)
+	store, err := OpenAuth(databasePath(*dbFlag, fileCfg.Server.Database), filepath.Join(filepath.Dir(configPath()), "server.json"))
 	if err != nil {
 		return err
+	}
+	defer store.Close()
+	cfg, hasConfig, err := takeSettingsFile(store, fileCfg, func(f string, a ...any) { ui.Printf("%s\n", ui.Dim(fmt.Sprintf(f, a...))) })
+	if err != nil {
+		return err
+	}
+	if *setup {
+		return askKeys(ui, store, &cfg)
+	}
+
+	// Folders given on the command line win; for the server they lock the
+	// library folders of the settings.
+	var cliRoots []Root
+	if len(folders)+len(given) > 0 {
+		if cliRoots, err = libraryRoots(cfg, folders, given); err != nil {
+			return err
+		}
+	}
+	roots := cliRoots
+	if roots == nil && !*serve {
+		if roots, err = libraryRoots(cfg, nil, nil); err != nil {
+			return err
+		}
+	}
+	if *serve {
+		if err := firstLibraries(store, &cfg, cliRoots, func(f string, a ...any) { ui.Printf("%s\n", ui.Dim(fmt.Sprintf(f, a...))) }); err != nil {
+			return err
+		}
 	}
 	if *undo {
 		for _, r := range roots {
@@ -185,51 +211,65 @@ func run(args []string, in io.Reader, out io.Writer) error {
 		}
 	}
 
-	for env, field := range map[string]*string{
-		"TMDB_API_KEY": &cfg.TMDBKey, "KINOPOISK_API_KEY": &cfg.KinopoiskKey, "OMDB_API_KEY": &cfg.OMDbKey,
-	} {
-		if v := os.Getenv(env); v != "" {
-			*field = v
-		}
-	}
-	if !hasConfig && !*yes && !*serve && cfg.TMDBKey+cfg.KinopoiskKey+cfg.OMDbKey == "" {
-		if err := askKeys(ui, &cfg); err != nil {
+	if !hasConfig && !*yes && !*serve && cfg.TMDBKey+cfg.KinopoiskKey+cfg.OMDbKey == "" &&
+		os.Getenv("TMDB_API_KEY")+os.Getenv("KINOPOISK_API_KEY")+os.Getenv("OMDB_API_KEY") == "" {
+		if err := askKeys(ui, store, &cfg); err != nil {
 			return err
 		}
 	}
+	// What flags and variables set wins over the settings; the settings
+	// page shows it locked.
+	locked := map[string]string{}
+	for _, v := range []struct {
+		env, key string
+		field    *string
+	}{{"TMDB_API_KEY", "tmdb_api_key", &cfg.TMDBKey}, {"OMDB_API_KEY", "omdb_api_key", &cfg.OMDbKey}, {"KINOPOISK_API_KEY", "kinopoisk_api_key", &cfg.KinopoiskKey}} {
+		if value := os.Getenv(v.env); value != "" {
+			*v.field, locked[v.key] = value, v.env
+		}
+	}
 	if *lang != "" {
-		cfg.Language = *lang
+		cfg.Language, locked["language"] = *lang, "-lang"
 	}
 	if cfg.Language == "" {
 		cfg.Language = "en-US"
 	}
 	if *sources != "" {
-		cfg.Sources = strings.Split(*sources, ",")
+		cfg.Sources, locked["sources"] = strings.Split(*sources, ","), "-sources"
 	}
 	providers, noKey, err := buildProviders(cfg)
 	if err != nil {
 		return err
 	}
 	if *serve {
-		o := ServerOptions{Debug: *debug, Roots: roots, Database: databasePath(*dbFlag, cfg.Server.Database), Cache: cachePath(*cacheFlag, cfg.Server.Cache), HWAccel: hwChoice(*hwFlag, cfg.Server.HWAccel), Name: *name, Port: *port, DLNA: *dlna, Guests: *guests, NoTags: *noTags, Config: cfg}
-		sc := cfg.Server
-		if !set["name"] && sc.Name != "" {
-			o.Name = sc.Name
+		sc := withDefaults(cfg).Server
+		o := ServerOptions{Auth: store, Locked: locked, Debug: *debug, Database: databasePath(*dbFlag, fileCfg.Server.Database), Config: cfg,
+			Roots: cfg.Libraries, Name: sc.Name, Port: sc.Port, DLNA: *sc.DLNA, Guests: *sc.Guests, NoTags: sc.NoTags,
+			Cache: sc.Cache, HWAccel: sc.HWAccel}
+		if cliRoots != nil {
+			o.Roots, locked["libraries"] = cliRoots, "the command line"
 		}
-		if !set["port"] && sc.Port != 0 {
-			o.Port = sc.Port
+		flags := []struct {
+			flag, key string
+			apply     func()
+		}{
+			{"name", "server.name", func() { o.Name = *name }},
+			{"port", "server.port", func() { o.Port = *port }},
+			{"dlna", "server.dlna", func() { o.DLNA = *dlna }},
+			{"guests", "server.guests", func() { o.Guests = *guests }},
+			{"no-tags", "server.no_tags", func() { o.NoTags = *noTags }},
 		}
-		if !set["dlna"] && sc.DLNA != nil {
-			o.DLNA = *sc.DLNA
+		for _, f := range flags {
+			if set[f.flag] {
+				f.apply()
+				locked[f.key] = "-" + f.flag
+			}
 		}
-		if !set["guests"] && sc.Guests != nil {
-			o.Guests = *sc.Guests
+		if c := chosenPath(*cacheFlag, "MEDIAKEEPER_CACHE", ""); c != "" {
+			o.Cache, locked["server.cache"] = c, map[bool]string{true: "-cache", false: "MEDIAKEEPER_CACHE"}[*cacheFlag != ""]
 		}
-		if !set["no-tags"] && sc.NoTags {
-			o.NoTags = true
-		}
-		if o.Name == "" {
-			o.Name = hostName()
+		if h := hwChoice(*hwFlag, ""); h != "" {
+			o.HWAccel, locked["server.hwaccel"] = h, map[bool]string{true: "-hwaccel", false: "MEDIAKEEPER_HWACCEL"}[*hwFlag != ""]
 		}
 		return Serve(ui, o)
 	}
@@ -296,7 +336,7 @@ func libraryRoots(cfg Config, args []string, given []Root) ([]Root, error) {
 
 // askKeys is the first-run dialog. Every key is optional: three sources
 // work without any.
-func askKeys(ui *UI, cfg *Config) error {
+func askKeys(ui *UI, store *Auth, cfg *Config) error {
 	ui.Box("API keys", []string{
 		"TVMaze, Wikidata, IMDb and Letterboxd need no key. Keys add:",
 		"",
@@ -308,7 +348,7 @@ func askKeys(ui *UI, cfg *Config) error {
 		"            https://kinopoiskapiunofficial.tech",
 	}, []string{
 		"Enter keeps the current value, \"-\" erases the key.",
-		"Keys are saved to " + configPath(),
+		"Keys are saved in the database, " + store.path + ".",
 	})
 	for _, k := range []struct {
 		name  string
@@ -330,7 +370,7 @@ func askKeys(ui *UI, cfg *Config) error {
 			*k.field = line
 		}
 	}
-	if err := saveConfig(*cfg); err != nil {
+	if err := store.SaveSettings(*cfg); err != nil {
 		ui.Printf("%s\n", ui.Yellow("Cannot save the settings: "+err.Error()))
 	}
 	ui.Printf("\n")

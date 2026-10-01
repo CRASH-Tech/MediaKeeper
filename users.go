@@ -84,6 +84,7 @@ type session struct {
 // the database only.
 type Auth struct {
 	db       *sql.DB
+	path     string
 	ServerID string
 
 	mu       sync.Mutex
@@ -223,7 +224,7 @@ func OpenAuth(path, legacy string) (*Auth, error) {
 	if fresh {
 		os.Chmod(path, 0o600) // password hashes and tokens
 	}
-	a := &Auth{db: db, sessions: map[string]*session{}, watched: map[string]map[string]*Progress{}}
+	a := &Auth{db: db, path: path, sessions: map[string]*session{}, watched: map[string]map[string]*Progress{}}
 	if fresh && legacy != "" && exists(legacy) {
 		if err := a.importJSON(legacy); err != nil {
 			db.Close()

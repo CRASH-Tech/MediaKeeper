@@ -42,11 +42,14 @@ A library is one or more folders (`Root{Path, Kind}`, `roots.go`):
 | `shows` | series only | `Show (Year)/Season NN/…` right inside |
 
 Folders come from the command line (positional = mixed, `-movies`, `-shows`;
-positional ones first), or from `libraries:` in the settings. Titles never
-move between folders; each folder has its own undo journal. The **first
-folder** is special: downloads in progress (`.incoming/`) and, unless
-chosen otherwise, the cache (`.cache/`) live in it, and its titles keep the identifiers they had before
-multiple folders existed (empty `rootKey`).
+positional ones first), or from the settings (chosen in the web UI). Titles
+never move between folders; each folder has its own undo journal. The
+**first folder** is special: downloads in progress (`.incoming/`) and,
+unless chosen otherwise, the cache (`.cache/`) live in it. Each folder
+saved in the settings carries its own `Key` (part of the item IDs, see
+below), so folders can be added, removed and reordered without changing
+IDs; keys given by place reproduce the IDs of before (empty for the first
+folder, its path + `\x00` for the others).
 
 ## 2. The organizer
 
@@ -111,7 +114,7 @@ pure-Go driver `modernc.org/sqlite`.
 
 | Table | Contents |
 |---|---|
-| `meta` | `server_id` (Jellyfin apps know the server by it) |
+| `meta` | `server_id` (Jellyfin apps know the server by it), `settings` (all settings, a JSON `Config`) |
 | `users` | id, name (unique, case-insensitive), PBKDF2-SHA256 hash, admin |
 | `sessions` | login tokens (web cookie `mk_token`, Jellyfin tokens) |
 | `watch` | per user × title (movie, episode or series): position, played, play count, favourite, last played, **rating** (1–10), **planned** (watchlist), **note** |
@@ -130,13 +133,17 @@ and series IDs to new ones and `Auth.Moved` rewrites `watch` and `history`.
 
 A single-page app in plain JavaScript without a build step. Routing is the
 URL hash (`#movies?genre=…`, `#movie/{id}`, `#show/{id}`, `#mine/history`,
-`#downloads`, `#users`); `render()` loads `/api/library` and draws pages
+`#downloads`, `#settings/{library,metadata,server,users}`); `start()` first
+asks `/api/setup` and shows the first-start wizard while there is no
+account; `render()` loads `/api/library` and draws pages
 with the `h()` helper. Main parts: catalogue grids with facet filters (genre,
 year, people, studio, "Mine"), title pages (hero with backdrop, screenshots,
 details, the user's rating/watchlist/favourite/note), the player, the edit
 sheet for administrators (description with "fill in from a catalogue",
-images, episodes), downloads, users, and the "My" page (continue, watchlist,
-history with statistics, rated, favourites).
+images, episodes), downloads, the "My" page (continue, watchlist, history
+with statistics, rated, favourites) and Settings for administrators (library
+folders with a picker of the server's folders, keys, sources, server
+options, users).
 
 ### Playback
 
@@ -240,27 +247,47 @@ titles next to the main ones. It has its own scan of the folders
 
 ## 4. Settings and files
 
-**Settings** (`config.go`): `config.yaml` is found at `-config`, else
-`MEDIAKEEPER_CONFIG`, else next to the binary (when writable and not a
-temporary `go run` build), else `~/.config/mediakeeper/`. Settings found in
-the old place are moved next to the binary once. The file is rewritten whole
-with comments by `-setup`; unknown keys are errors. Paths can be chosen by
-flag, environment variable or setting, in that order of precedence
-(`chosenPath`; relative paths in the settings are relative to its folder):
-the database (`-db`, `MEDIAKEEPER_DB`, `server.database`) and the cache
-(`-cache`, `MEDIAKEEPER_CACHE`, `server.cache`).
+**Settings** (`settings.go`) are kept in the database, in the `settings` row
+of `meta`, and changed in the web UI (`/api/settings`, administrators). The
+server works from `liveSettings` — the settings in force, the existing
+library folders, the cache folder, the graphics card — read through
+accessors (`s.config()`, `s.libRoots()`, …); `applySettings` puts a saved
+change into force at once (library folders, name, keys and sources, cache,
+graphics card) and reports what takes a restart (port, DLNA). The order of
+precedence is flags > environment variables > saved settings > defaults;
+what a flag or variable sets is recorded in `locked` and shown read-only.
 
-| Next to the settings | |
+`config.yaml` (`config.go`) is found at `-config`, else `MEDIAKEEPER_CONFIG`,
+else next to the binary (when writable and not a temporary `go run` build),
+else `~/.config/mediakeeper/`. It only says where the database is
+(`server.database`); anything else in it — an earlier version's settings, or
+a setting put in by hand — is merged into the database at the start
+(`takeSettingsFile`), and the file is rewritten (the old one kept as
+`config.yaml.old`). `-setup` saves the API keys into the database. Paths are
+chosen by flag, environment variable or setting, in that order
+(`chosenPath`; relative ones are relative to the folder of `config.yaml`):
+the database (`-db`, `MEDIAKEEPER_DB`, `server.database`) and the cache
+(`-cache`, `MEDIAKEEPER_CACHE`, the `cache` setting).
+
+**First start**: a server may start with no account and no library folder.
+While there is no account, `/api/setup` (and the folder picker,
+`/api/settings/folders`) is open without signing in; its POST checks the
+settings, makes the administrator, signs them in and closes for good.
+`MEDIAKEEPER_ADMIN_PASSWORD` makes or resets the account without it. The
+library folders a server first starts with (the command line, or `/media`
+in Docker) are saved once (`firstLibraries`).
+
+| Next to the binary (or `-config`) | |
 |---|---|
-| `config.yaml` | keys, language, sources, libraries, `server:` options |
-| `mediakeeper.db` (+ `-wal`, `-shm`) | accounts, watch data, history |
+| `config.yaml` | where the database is; settings put in it are taken into the database |
+| `mediakeeper.db` (+ `-wal`, `-shm`) | settings, accounts, watch data, history |
 | `jellyfin-debug.log` | with `-debug` |
 
 | In a library folder | |
 |---|---|
 | `.mediakeeper/*.json` | undo journals of runs in this folder |
 | `.incoming/` (first folder) | downloads in progress, `downloads.json` |
-| `.cache/screenshots/`, `.cache/stills/` (first folder) | generated images, unless `-cache`, `MEDIAKEEPER_CACHE` or `server.cache` puts them elsewhere |
+| `.cache/screenshots/`, `.cache/stills/` (first folder) | generated images, unless `-cache`, `MEDIAKEEPER_CACHE` or the `cache` setting puts them elsewhere |
 | `*.nfo`, `poster.jpg`, `backdrop.jpg`, `seasonNN-poster.jpg`, `*-thumb.jpg` | descriptions and artwork, the Jellyfin/Kodi way |
 
 Conversions use temporary folders `mediakeeper-hls-*`/`mediakeeper-vod-*`,

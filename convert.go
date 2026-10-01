@@ -49,7 +49,7 @@ func (s *Server) convertArgs(it *CatItem, o convertOptions) conversion {
 	}
 
 	interlaced := v != nil && v.Interlaced()
-	hw := s.hw
+	hw := s.card()
 	if hw != nil && s.hwFailed(it.Path) {
 		hw = nil
 	}

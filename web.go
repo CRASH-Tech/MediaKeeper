@@ -88,8 +88,19 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The first start, before there is any account: the setup, and the
+	// folders of the server to choose library folders from.
+	if parts[0] == "setup" {
+		s.setupAPI(w, r)
+		return
+	}
+	if parts[0] == "settings" && arg(1) == "folders" && !s.auth.HasUsers() {
+		s.foldersAPI(w, r)
+		return
+	}
+
 	u := s.user(r)
-	if u == nil && s.guests {
+	if u == nil && s.guestsOn() {
 		u = s.guest(w, r)
 	}
 	if u == nil {
@@ -133,6 +144,17 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		return
 	case "screens":
 		s.screens.api(w, r, u, arg(1), strings.Join(parts[min(2, len(parts)):], "/"))
+		return
+	case "settings":
+		if !u.Admin {
+			apiError(w, http.StatusForbidden, errors.New("only an administrator can change the settings"))
+			return
+		}
+		if arg(1) == "folders" {
+			s.foldersAPI(w, r)
+		} else {
+			s.settingsAPI(w, r)
+		}
 		return
 	case "users":
 		if !u.Admin {
@@ -272,7 +294,7 @@ func (s *Server) itemJSON(it *CatItem, u *User, details bool) map[string]any {
 	}
 	m["plot"], m["originalTitle"], m["tagline"], m["date"] = it.Plot, it.OriginalTitle, it.Tagline, it.Date
 	m["imdb"], m["size"], m["file"] = it.IMDb, it.Size, it.Rel
-	if len(s.roots) > 1 { // which of the library folders
+	if len(s.libRoots()) > 1 { // which of the library folders
 		m["file"] = filepath.Join(filepath.Base(it.Root), it.Rel)
 	}
 	info := s.lib.Probe(it)
@@ -336,7 +358,7 @@ func (s *Server) libraryJSON(cat *Catalog, u *User) map[string]any {
 		})
 		mineJSON(shows[len(shows)-1], s.auth.Progress(u.ID, show.ID))
 	}
-	return map[string]any{"name": s.name, "movies": movies, "shows": shows}
+	return map[string]any{"name": s.serverName(), "movies": movies, "shows": shows, "folders": len(s.libRoots())}
 }
 
 // What current browsers play without help. Matroska is on the list because

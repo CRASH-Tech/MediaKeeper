@@ -20,7 +20,7 @@ func TestSubtitles(t *testing.T) {
 	}
 	s, srv := serverFixture(t) // (it empties PATH)
 	s.ffmpeg, s.prober.tool = ffmpeg, ffprobe
-	dir := filepath.Join(s.root, "Clip (2020)")
+	dir := filepath.Join(s.firstRoot(), "Clip (2020)")
 	os.MkdirAll(dir, 0o755)
 	srt := func(name, text string) string {
 		path := filepath.Join(t.TempDir(), name)
@@ -61,7 +61,7 @@ func TestSubtitles(t *testing.T) {
 	if status != 200 || !strings.HasPrefix(vtt, "WEBVTT") || !strings.Contains(vtt, "Привет") || !strings.Contains(vtt, "00:00:01.000 --> 00:00:03.500") {
 		t.Fatalf("embedded track: %d\n%s", status, vtt)
 	}
-	cached, _ := filepath.Glob(filepath.Join(s.cacheDir, "subtitles", "*", "*.srt"))
+	cached, _ := filepath.Glob(filepath.Join(s.cacheRoot(), "subtitles", "*", "*.srt"))
 	if len(cached) != 2 {
 		t.Errorf("both text tracks are taken out at once, into the cache: %v", cached)
 	}

@@ -199,8 +199,8 @@ func TestCachePath(t *testing.T) {
 		if cache != "" {
 			want = cache
 		}
-		if s.screens.dir != filepath.Join(want, "screenshots") || s.screens.stillsDir != filepath.Join(want, "stills") {
-			t.Errorf("cache %q: screenshots in %s, stills in %s", cache, s.screens.dir, s.screens.stillsDir)
+		if s.screens.shotsDir() != filepath.Join(want, "screenshots") || s.screens.stillsDir() != filepath.Join(want, "stills") {
+			t.Errorf("cache %q: screenshots in %s, stills in %s", cache, s.screens.shotsDir(), s.screens.stillsDir())
 		}
 		s.dl.Close()
 		s.auth.Close()
@@ -255,7 +255,7 @@ func TestMineAPI(t *testing.T) {
 		t.Errorf("another user sees the marks: %+v", mine)
 	}
 	// Guests keep nothing.
-	s.guests = true
+	s.live.cfg.Server.Guests = &[]bool{true}[0]
 	guest := newBrowser(t, srv, "")
 	if status, _ := guest.post("/api/mine/"+iron, map[string]any{"rating": 3}); status != http.StatusForbidden {
 		t.Errorf("a guest rated: %d", status)

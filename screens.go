@@ -46,9 +46,7 @@ type screenJob struct {
 }
 
 type screenMaker struct {
-	s         *Server
-	dir       string
-	stillsDir string
+	s *Server
 
 	mu      sync.Mutex
 	urgent  []screenJob     // asked for by someone looking at the page
@@ -59,13 +57,17 @@ type screenMaker struct {
 }
 
 func newScreenMaker(s *Server) *screenMaker {
-	return &screenMaker{s: s, dir: filepath.Join(s.cacheDir, "screenshots"), stillsDir: filepath.Join(s.cacheDir, "stills"),
+	return &screenMaker{s: s,
 		pending: map[string]bool{}, failed: map[string]bool{}, wake: make(chan struct{}, 1), stop: make(chan struct{})}
 }
 
-func (m *screenMaker) folder(id string) string { return filepath.Join(m.dir, id) }
+// The folders follow the settings, which may change while the server runs.
+func (m *screenMaker) shotsDir() string  { return filepath.Join(m.s.cacheRoot(), "screenshots") }
+func (m *screenMaker) stillsDir() string { return filepath.Join(m.s.cacheRoot(), "stills") }
 
-func (m *screenMaker) stillPath(id string) string { return filepath.Join(m.stillsDir, id+".jpg") }
+func (m *screenMaker) folder(id string) string { return filepath.Join(m.shotsDir(), id) }
+
+func (m *screenMaker) stillPath(id string) string { return filepath.Join(m.stillsDir(), id+".jpg") }
 
 // episodeStill is the picture of an episode: its own still, or the frame
 // taken from it; "" while there is neither.
@@ -240,10 +242,10 @@ func (m *screenMaker) take(job screenJob) error {
 		filters = "bwdif=mode=send_frame," + filters
 	}
 
-	if err := os.MkdirAll(m.dir, 0o755); err != nil {
+	if err := os.MkdirAll(m.shotsDir(), 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.MkdirTemp(m.dir, ".new-")
+	tmp, err := os.MkdirTemp(m.shotsDir(), ".new-")
 	if err != nil {
 		return err
 	}
@@ -292,7 +294,7 @@ func (m *screenMaker) takeStill(id string) error {
 	if v := info.stream("video"); v != nil && v.Interlaced() {
 		filters = "bwdif=mode=send_frame," + filters
 	}
-	if err := os.MkdirAll(m.stillsDir, 0o755); err != nil {
+	if err := os.MkdirAll(m.stillsDir(), 0o755); err != nil {
 		return err
 	}
 	dst := m.stillPath(id)
@@ -314,16 +316,16 @@ func (m *screenMaker) prune() {
 	if err != nil {
 		return
 	}
-	entries, _ := os.ReadDir(m.dir)
+	entries, _ := os.ReadDir(m.shotsDir())
 	for _, e := range entries {
 		if cat.items[e.Name()] == nil {
-			os.RemoveAll(filepath.Join(m.dir, e.Name()))
+			os.RemoveAll(filepath.Join(m.shotsDir(), e.Name()))
 		}
 	}
-	stills, _ := os.ReadDir(m.stillsDir)
+	stills, _ := os.ReadDir(m.stillsDir())
 	for _, e := range stills {
 		if it := cat.items[strings.TrimSuffix(e.Name(), ".jpg")]; it == nil || it.Thumb != "" {
-			os.Remove(filepath.Join(m.stillsDir, e.Name()))
+			os.Remove(filepath.Join(m.stillsDir(), e.Name()))
 		}
 	}
 }

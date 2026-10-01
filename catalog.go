@@ -314,6 +314,13 @@ func (l *Library) Catalog() (*Catalog, error) {
 	return cat, nil
 }
 
+// setRoots changes the folders of the library; the next request rescans.
+func (l *Library) setRoots(roots []Root) {
+	l.mu.Lock()
+	l.roots, l.scanned = roots, time.Time{}
+	l.mu.Unlock()
+}
+
 // Invalidate makes the next request rescan: files have just been added.
 func (l *Library) Invalidate() {
 	l.mu.Lock()
