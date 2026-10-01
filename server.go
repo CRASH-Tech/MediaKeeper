@@ -43,7 +43,8 @@ type Server struct {
 	dlna   *DLNAServer
 	ffmpeg string
 
-	transcodes chan struct{} // limits simultaneous ffmpeg processes
+	transcodes  chan struct{} // limits simultaneous ffmpeg processes
+	conversions viewerStreams // the converted streams each viewer has open
 	hls        *hlsManager
 	screens    *screenMaker
 	organizing sync.Mutex // one change of the library at a time
@@ -87,6 +88,73 @@ func NewServer(o ServerOptions, log func(string, ...any)) (*Server, error) {
 	s.hls = newHLSManager(s)
 	s.screens = newScreenMaker(s)
 	return s, nil
+}
+
+// takeSlot waits a little for one of the conversion slots: a slot is
+// freed a moment after a viewer seeks or leaves, which the server notices
+// only when ffmpeg has stopped.
+func (s *Server) takeSlot(ctx context.Context) bool {
+	wait := time.NewTimer(slotWait)
+	defer wait.Stop()
+	select {
+	case s.transcodes <- struct{}{}:
+		return true
+	case <-ctx.Done():
+	case <-wait.C:
+	}
+	return false
+}
+
+var slotWait = 10 * time.Second // a variable for the tests
+
+// viewerStreams are the converted streams in progress, by viewer. A viewer
+// watches one at a time: a new one (a seek, another audio track) ends the
+// ones before it at once, rather than whenever the browser gets round to
+// dropping their connections.
+type viewerStreams struct {
+	mu   sync.Mutex
+	open map[string][]*viewerStream
+}
+
+type viewerStream struct {
+	cancel context.CancelFunc
+	ended  chan struct{}
+}
+
+// begin registers a new stream of a viewer and ends their others, waiting
+// (briefly) until they have let go of their slots. done unregisters it.
+func (v *viewerStreams) begin(parent context.Context, viewer string) (ctx context.Context, done func()) {
+	ctx, cancel := context.WithCancel(parent)
+	me := &viewerStream{cancel: cancel, ended: make(chan struct{})}
+	v.mu.Lock()
+	if v.open == nil {
+		v.open = map[string][]*viewerStream{}
+	}
+	old := v.open[viewer]
+	v.open[viewer] = []*viewerStream{me}
+	v.mu.Unlock()
+	for _, o := range old {
+		o.cancel()
+	}
+	for _, o := range old {
+		select {
+		case <-o.ended:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	return ctx, func() {
+		cancel()
+		close(me.ended)
+		v.mu.Lock()
+		list := v.open[viewer][:0]
+		for _, o := range v.open[viewer] {
+			if o != me {
+				list = append(list, o)
+			}
+		}
+		v.open[viewer] = list
+		v.mu.Unlock()
+	}
 }
 
 // rootFor is the library folder a file lies in.

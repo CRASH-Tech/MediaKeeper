@@ -246,7 +246,9 @@ writer or studio, and put it in another order.
 
 A title page shows the description in groups — plot, genres, director,
 writers, cast, studio, country — and every value is a link: click an actor or
-a genre to see everything else in the library that shares it.
+a genre to see everything else in the library that shares it. Its **← Movies**
+(or **← Shows**) button — and the browser's Back — returns to the list it was
+opened from, with its filters and order, scrolled to that title.
 
 The player takes the file as it is when the browser can play it
 (MP4/WebM/Matroska with H.264, VP9 or AV1 video and AAC, MP3 or Opus audio).
@@ -254,9 +256,16 @@ Anything else — AVI, HEVC, AC3 or DTS sound — is converted by `ffmpeg` on th
 fly; this costs the server CPU, and at most two conversions run at a time.
 Safari (macOS, iPad, iPhone) gets the converted video as HLS, the only
 streamed form it plays without downloading everything first; other browsers
-get a plain stream. Converted video is sought with the slider under the
-picture. Progress is remembered per user, and a series continues with the
-next episode.
+get a plain stream. A converted stream is made while it plays, so the
+browser does not know its length and its own controls cannot seek (Safari's
+full screen calls it a live broadcast): converted video gets the player's
+own controls instead — play, the seek slider, sound, picture in picture and
+full screen (also a double click, or F), which keeps the controls. They lie
+over the picture and fade while it plays; a move of the mouse, a tap or a
+key brings them back. A seek ends the viewer's previous
+conversion at once, so it never counts against the limit of two.
+Progress is remembered per user, and a series continues with the next
+episode.
 
 A movie's page shows eight screenshots, taken by `ffmpeg` in the
 background between 10% and 90% of the film (so not the logos or the
@@ -330,6 +339,14 @@ candidates from all sources, lets you search by another title or paste an
 IMDb number or a link, say that a series file is a single episode or the
 whole series, or delete the files. Downloads are kept in the hidden folder
 `.incoming` inside the (first) library folder until they are filed.
+
+While a download is still running, **Say what it is…** lets you pick the
+title in advance (search, or an IMDb number or link): when the download
+finishes it is filed as that, without guessing from the file name. A
+finished download shows what it became, **In the library**, with links to
+the titles' pages — they stay right after a title is corrected and
+renamed — and **Wrong? Fix…**, which opens the edit sheet already searching
+the catalogues.
 
 ### Jellyfin apps
 

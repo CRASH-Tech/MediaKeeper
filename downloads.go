@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -46,10 +47,20 @@ type Download struct {
 	Error  string    `json:"error,omitempty"`
 	Log    string    `json:"log,omitempty"` // what the organizer said
 	Added  time.Time `json:"added"`
+	Filed  []string  `json:"filed,omitempty"`  // where its videos are in the library now
+	Preset *preset   `json:"preset,omitempty"` // what it is, said before it finished
 
 	dir    string
 	cancel context.CancelFunc
 	busy   bool // being organized right now
+}
+
+// preset is the administrator's answer to "what is it?" given while the
+// download is still running; it is used instead of a search when the
+// download turns out to be one movie or one series.
+type preset struct {
+	resolveRequest
+	Label string `json:"label"` // "Inception (2010) · TMDB"
 }
 
 type Downloads struct {
@@ -484,10 +495,27 @@ func (d *Downloads) organize(dl *Download) {
 		return
 	}
 	plan := &Plan{}
-	for _, u := range Group(a.files) {
-		m, err := a.Identify(u)
-		if err != nil {
-			fmt.Fprintf(&out, "✗ %s: %v\n", u.Files[0].Rel, err)
+	units := Group(a.files)
+	d.mu.Lock()
+	p := dl.Preset
+	d.mu.Unlock()
+	if p != nil && len(units) != 1 {
+		fmt.Fprintf(&out, "(%q was said, but the download holds %d titles: each is identified on its own)\n", p.Label, len(units))
+		p = nil
+	}
+	for _, u := range units {
+		var m *Match
+		var err error
+		if p != nil {
+			if m, err = matchFor(a, u, p.resolveRequest); err != nil {
+				fmt.Fprintf(&out, "(%s does not fit the files: %v)\n", p.Label, err)
+				m = nil
+			}
+		}
+		if m == nil {
+			if m, err = a.Identify(u); err != nil {
+				fmt.Fprintf(&out, "✗ %s: %v\n", u.Files[0].Rel, err)
+			}
 		}
 		if m != nil {
 			d.plan(a, plan, u, m, &out)
@@ -523,6 +551,15 @@ func (d *Downloads) finish(dl *Download, a *App, plan *Plan, out *bytes.Buffer) 
 		a.Apply(plan)
 		d.s.organizing.Unlock()
 		d.s.refresh()
+		var filed []string
+		for _, it := range plan.Items {
+			// Moved: there now, gone from the download (a file of the same
+			// name already in the library does not count).
+			if it.Move.Src != "" && !it.IsDir && it.Conflict == "" && exists(it.Move.Dst) && !exists(it.Move.Src) {
+				filed = append(filed, it.Move.Dst)
+			}
+		}
+		d.set(dl, func() { dl.Filed = append(dl.Filed, filed...) })
 	}
 	left, _ := Scan(dl.dir)
 	log := strings.TrimSpace(out.String())
@@ -573,14 +610,103 @@ func (d *Downloads) unit(dl *Download, key string, out *bytes.Buffer) (*App, *Un
 	return nil, nil, errors.New("these files are not waiting any more")
 }
 
-// search looks a waiting unit up in all sources.
+// search looks a waiting unit up in all sources; without a key, the
+// download itself, by its name, while it is still running.
 func (d *Downloads) search(dl *Download, key, query string) ([]candidate, error) {
 	var out bytes.Buffer
+	if key == "" {
+		a, err := d.searcher(&out)
+		if err != nil {
+			return nil, err
+		}
+		return candidatesFor(a, guessUnit(dl.Name), query), nil
+	}
 	a, u, err := d.unit(dl, key, &out)
 	if err != nil {
 		return nil, err
 	}
 	return candidatesFor(a, u, query), nil
+}
+
+// guessUnit is what a download's name suggests before there are files.
+func guessUnit(name string) *Unit {
+	g := ParsePath(name)
+	u := &Unit{Kind: kindMovie, Title: g.Title, Year: g.Year}
+	if g.IsSeries {
+		u.Kind = kindTV
+	}
+	return u
+}
+
+// searcher is an organizer that only searches the sources.
+func (d *Downloads) searcher(out *bytes.Buffer) (*App, error) {
+	providers, _, err := buildProviders(d.s.cfg)
+	if err != nil {
+		return nil, err
+	}
+	ui := NewUI(strings.NewReader(""), out)
+	a := &App{ui: ui}
+	a.hub = NewHub(providers, func(name, reason string) { ui.Printf("(source %s is off: %s)\n", name, reason) })
+	return a, nil
+}
+
+// setPreset records what a running download is. The entry is loaded now,
+// so that a wrong ID is reported at once and the page can name the choice.
+func (d *Downloads) setPreset(dl *Download, req resolveRequest) error {
+	if dl.State != stateDownloading {
+		return errors.New("the download has finished: choose for its files below")
+	}
+	var out bytes.Buffer
+	a, err := d.searcher(&out)
+	if err != nil {
+		return err
+	}
+	var m *Match
+	if req.Ref != "" {
+		ref, ok := parseRef(strings.TrimSpace(req.Ref))
+		if !ok {
+			return errors.New("not an IMDb number, tmdb:ID, kp:ID, tvmaze:ID or a link to one of the catalogues")
+		}
+		m, err = a.lookupRef(ref, guessUnit(dl.Name).Kind)
+	} else {
+		m, err = a.hub.Load(SearchResult{Source: req.Source, Kind: req.Kind, ID: req.ID})
+	}
+	if err != nil {
+		return err
+	}
+	a.localize(m)
+	p := &preset{}
+	// Kept as the entry itself: the files decide later whether a series is
+	// one file or many.
+	if m.Show != nil {
+		p.Source, p.ID, p.Kind = m.Show.Source, m.Show.ID, kindTV
+		p.Label = withYear(m.Show.Title, m.Show.Year) + " · " + a.sourceName(m.Show.Source)
+	} else {
+		p.Source, p.ID, p.Kind = m.Movie.Source, m.Movie.ID, m.Movie.SourceKind()
+		p.Label = withYear(m.Movie.Title, m.Movie.Year) + " · " + a.sourceName(m.Movie.Source)
+	}
+	p.AsMovie = true // a single file of a series is the whole series, as the console asks
+	d.set(dl, func() { dl.Preset = p })
+	d.save()
+	return nil
+}
+
+// moved follows a file of a finished download that was renamed in the
+// library, so that the page still leads to it.
+func (d *Downloads) moved(from, to string) {
+	changed := false
+	d.mu.Lock()
+	for _, dl := range d.list {
+		for i, path := range dl.Filed {
+			if path == from {
+				dl.Filed[i], changed = to, true
+			}
+		}
+	}
+	d.mu.Unlock()
+	if changed {
+		d.save()
+	}
 }
 
 func (d *Downloads) resolve(dl *Download, req resolveRequest) error {
@@ -673,6 +799,14 @@ func (d *Downloads) api(w http.ResponseWriter, r *http.Request, parts []string) 
 			writeJSON(w, http.StatusOK, list)
 			return
 		}
+	case action == "preset" && r.Method == http.MethodPost:
+		var req resolveRequest
+		if err = readJSON(r, &req); err == nil {
+			err = d.setPreset(dl, req)
+		}
+	case action == "preset" && r.Method == http.MethodDelete:
+		d.set(dl, func() { dl.Preset = nil })
+		d.save()
 	case action == "resolve" && r.Method == http.MethodPost:
 		var req resolveRequest
 		if err = readJSON(r, &req); err == nil {
@@ -731,7 +865,47 @@ func (d *Downloads) listJSON() []map[string]any {
 		if dl.State == stateAttention {
 			m["pending"] = d.pending(&dl)
 		}
+		if dl.Preset != nil {
+			m["preset"] = dl.Preset.Label
+		}
+		if titles := d.titles(dl.Filed); len(titles) > 0 {
+			m["titles"] = titles
+		}
 		out = append(out, m)
 	}
+	return out
+}
+
+// titles are the movies and series of the library a download's files are
+// in, for links to their pages.
+func (d *Downloads) titles(files []string) []map[string]any {
+	if len(files) == 0 {
+		return nil
+	}
+	cat, err := d.s.lib.Catalog()
+	if err != nil {
+		return nil
+	}
+	wanted := map[string]bool{}
+	for _, f := range files {
+		wanted[f] = true
+	}
+	seen := map[string]bool{}
+	var out []map[string]any
+	for _, it := range cat.items {
+		if !wanted[it.Path] {
+			continue
+		}
+		t := map[string]any{"id": it.ID, "kind": "movie", "title": it.Title, "localTitle": it.LocalTitle, "year": it.Year, "poster": it.Poster != ""}
+		if it.Kind == kindEpisode {
+			show := it.Show
+			t = map[string]any{"id": show.ID, "kind": "show", "title": show.Title, "localTitle": show.LocalTitle, "year": show.Year, "poster": show.Poster != ""}
+		}
+		if id := t["id"].(string); !seen[id] {
+			seen[id] = true
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i]["title"].(string) < out[j]["title"].(string) })
 	return out
 }

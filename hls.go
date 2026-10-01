@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -90,9 +91,7 @@ func (m *hlsManager) start(it *CatItem, user *User, from float64, audio int) (*h
 	for _, sess := range old {
 		m.stop(sess)
 	}
-	select {
-	case s.transcodes <- struct{}{}:
-	default:
+	if !s.takeSlot(context.Background()) {
 		return nil, errBusyConverting
 	}
 	dir, err := os.MkdirTemp("", "mediakeeper-hls-")

@@ -433,6 +433,9 @@ func (s *Server) renameMovie(it *CatItem, title string, year int) (string, error
 	plan.add(item)
 	a.Apply(plan)
 	s.refresh()
+	if s.dl != nil && exists(item.Move.Dst) {
+		s.dl.moved(item.From, item.Move.Dst)
+	}
 	if err := firstFailure(out.String()); err != nil {
 		return it.Path, err
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"os/exec"
@@ -420,5 +421,33 @@ func TestEpisodeStills(t *testing.T) {
 	}
 	if _, body := kid.get("/api/image/" + id + "/thumb"); body != "OWN" {
 		t.Errorf("the episode's own still: %q", body)
+	}
+}
+
+// A seek starts a new stream while the browser has not yet dropped the old
+// one: the viewer's old stream is ended to make room, and only somebody
+// else's streams can make the server busy.
+func TestSeekFreesTheViewersSlot(t *testing.T) {
+	defer func(w time.Duration) { slotWait = w }(slotWait)
+	slotWait = 200 * time.Millisecond
+	s := &Server{transcodes: make(chan struct{}, 2)}
+	hold := func(viewer string) {
+		ctx, done := s.conversions.begin(context.Background(), viewer)
+		if !s.takeSlot(ctx) {
+			t.Fatalf("%s got no slot", viewer)
+		}
+		go func() { <-ctx.Done(); <-s.transcodes; done() }() // like ffmpeg ending with its request
+	}
+	hold("someone else")
+	hold("viewer")
+	start := time.Now()
+	hold("viewer") // the seek: the viewer's first stream makes room
+	if time.Since(start) > 150*time.Millisecond {
+		t.Errorf("the seek waited %v", time.Since(start))
+	}
+	ctx, done := s.conversions.begin(context.Background(), "a third viewer")
+	defer done()
+	if s.takeSlot(ctx) {
+		t.Errorf("a third viewer got a slot while two others are watching")
 	}
 }

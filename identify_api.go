@@ -247,6 +247,11 @@ func (s *Server) fix(id string, req resolveRequest, opt fixOptions) (string, err
 	}
 	a.Apply(plan)
 	s.refresh()
+	for _, it := range plan.Items { // a download that brought these files still leads to them
+		if s.dl != nil && it.Move.Src != "" && !it.IsDir {
+			s.dl.moved(it.From, it.Move.Dst)
+		}
+	}
 	if err := firstFailure(out.String()); err != nil {
 		return "", err
 	}

@@ -428,6 +428,8 @@ func TestJellyfinAPI(t *testing.T) {
 type downloadView struct {
 	ID, Name, State, Error, Log string
 	Pending                     []pendingUnit
+	Preset                      string
+	Titles                      []struct{ ID, Kind, Title string }
 }
 
 // waitDownloads polls until no download is in progress.
@@ -551,6 +553,28 @@ func TestDownloads(t *testing.T) {
 		t.Errorf("movies after downloads: %s", got)
 	}
 
+	// A finished download leads to what it became, even after that was
+	// corrected and renamed.
+	for _, d := range waitDownloads(t, boss) {
+		if d.Name == "Iron.Man.2008.BDRip.mkv" {
+			iron = d
+		}
+	}
+	if len(iron.Titles) != 1 || iron.Titles[0].Title != "Железный человек" || iron.Titles[0].Kind != "movie" {
+		t.Fatalf("titles of a download: %+v", iron.Titles)
+	}
+	if status, body := boss.post("/api/fix/"+iron.Titles[0].ID, resolveRequest{Ref: "tmdb:10"}); status != 200 {
+		t.Fatalf("fix: %d %s", status, body)
+	}
+	for _, d := range waitDownloads(t, boss) {
+		if d.Name == "Iron.Man.2008.BDRip.mkv" && (len(d.Titles) != 1 || d.Titles[0].Title != "На линии огня") {
+			t.Errorf("after the fix the download leads to %+v", d.Titles)
+		}
+		if d.Name == "Star.Trek.Enterprise.s1e01-02.Broken.Bow.mkv" && (len(d.Titles) != 1 || d.Titles[0].Kind != "show") {
+			t.Errorf("an episode leads to its series: %+v", d.Titles)
+		}
+	}
+
 	// Entries can be removed; a restart keeps the list.
 	if status, _ := boss.do("DELETE", "/api/downloads/"+waiting.ID, nil, nil); status != 200 {
 		t.Errorf("remove: %d", status)
@@ -558,6 +582,69 @@ func TestDownloads(t *testing.T) {
 	again := NewDownloads(s)
 	if len(again.list) != len(list)-1 {
 		t.Errorf("after a restart: %d entries, want %d", len(again.list), len(list)-1)
+	}
+}
+
+// What a download is can be said while it still downloads: it is then filed
+// as that instead of being guessed from its name.
+func TestDownloadPreset(t *testing.T) {
+	s, srv := serverFixture(t)
+	boss := newBrowser(t, srv, "boss")
+	name := "Myatezh.2025.AMZN.WEB-DLRip.AVC.mkv" // unknown to the catalogues by this name
+	dl := &Download{ID: "running", Source: "magnet:?xt=urn:btih:abc", Name: name, State: stateDownloading,
+		dir: filepath.Join(s.dl.dir, "running")}
+	os.MkdirAll(dl.dir, 0o755)
+	os.WriteFile(filepath.Join(dl.dir, name), []byte("video"), 0o644)
+	s.dl.mu.Lock()
+	s.dl.list = append(s.dl.list, dl)
+	s.dl.mu.Unlock()
+
+	var candidates []candidate
+	boss.json("/api/downloads/running/search", &candidates) // by the name, there are no files yet
+	if len(candidates) == 0 {
+		t.Errorf("no candidates for a running download")
+	}
+	if status, body := boss.post("/api/downloads/running/preset", resolveRequest{Ref: "nonsense"}); status != 400 {
+		t.Errorf("a wrong reference: %d %s", status, body)
+	}
+	if status, body := boss.post("/api/downloads/running/preset", resolveRequest{Ref: "tt7777777"}); status != 200 {
+		t.Fatalf("preset: %d %s", status, body)
+	}
+	var list []downloadView
+	boss.json("/api/downloads", &list)
+	if list[0].Preset != "Мятеж (2025) · TMDB" {
+		t.Errorf("preset: %+v", list[0])
+	}
+
+	// Finished: filed as said, no question asked.
+	s.dl.set(dl, func() { dl.State = stateOrganizing })
+	s.dl.organize(dl)
+	boss.json("/api/downloads", &list)
+	if list[0].State != stateDone || len(list[0].Titles) != 1 || list[0].Titles[0].Title != "Мятеж" {
+		t.Errorf("after finishing: %+v", list[0])
+	}
+	if !exists(filepath.Join(s.root, moviesFolder, "Мятеж (2025)", "Мятеж (2025).mkv")) {
+		t.Errorf("not filed as said:\n  %s", strings.Join(tree(t, s.root), "\n  "))
+	}
+	// A second copy cannot be filed over the first: it waits, and does not
+	// claim the first one as its own.
+	again := &Download{ID: "again", Source: "magnet:?xt=urn:btih:def", Name: name, State: stateOrganizing,
+		dir: filepath.Join(s.dl.dir, "again"), Preset: &preset{resolveRequest{Ref: "tt7777777"}, "Мятеж (2025)"}}
+	os.MkdirAll(again.dir, 0o755)
+	os.WriteFile(filepath.Join(again.dir, name), []byte("video"), 0o644)
+	s.dl.mu.Lock()
+	s.dl.list = append(s.dl.list, again)
+	s.dl.mu.Unlock()
+	s.dl.organize(again)
+	list = nil // decoding into the old list would keep fields the answer leaves out
+	boss.json("/api/downloads", &list)
+	if list[0].ID != "again" || list[0].State != stateAttention || len(list[0].Titles) != 0 {
+		t.Errorf("a copy that was not filed: %+v", list[0])
+	}
+
+	// Too late to say once it has finished.
+	if status, _ := boss.post("/api/downloads/running/preset", resolveRequest{Ref: "tt7777777"}); status != 400 {
+		t.Errorf("a preset for a finished download: %d", status)
 	}
 }
 

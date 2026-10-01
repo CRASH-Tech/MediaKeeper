@@ -170,7 +170,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		case "stream":
 			s.serveVideo(w, r, it, u.Name)
 		case "transcode":
-			s.transcode(w, r, it, u.Name)
+			s.transcode(w, r, it, u)
 		case "subs":
 			n, _ := strconv.Atoi(strings.TrimSuffix(arg(2), ".vtt"))
 			offset, _ := strconv.ParseFloat(r.URL.Query().Get("offset"), 64)
@@ -338,19 +338,23 @@ var (
 // transcode streams a video in a form browsers play: MP4 with H.264 and
 // AAC. A track that already is what browsers accept is copied, which costs
 // almost nothing; anything else is re-encoded on the fly. The stream
-// cannot be seeked, so the player asks for a new one from another start.
-func (s *Server) transcode(w http.ResponseWriter, r *http.Request, it *CatItem, who string) {
+// cannot be seeked, so the player asks for a new one from another start;
+// the viewer's earlier stream is ended first, which is what a seek is.
+func (s *Server) transcode(w http.ResponseWriter, r *http.Request, it *CatItem, u *User) {
 	if s.ffmpeg == "" {
 		apiError(w, http.StatusNotImplemented, errors.New("ffmpeg is not installed on the server"))
 		return
 	}
-	select {
-	case s.transcodes <- struct{}{}:
-		defer func() { <-s.transcodes }()
-	default:
-		apiError(w, http.StatusServiceUnavailable, errBusyConverting)
+	ctx, done := s.conversions.begin(r.Context(), u.ID)
+	defer done()
+	if !s.takeSlot(ctx) {
+		if ctx.Err() == nil {
+			apiError(w, http.StatusServiceUnavailable, errBusyConverting)
+		}
 		return
 	}
+	defer func() { <-s.transcodes }()
+	who := u.Name
 	q := r.URL.Query()
 	start, _ := strconv.ParseFloat(q.Get("start"), 64)
 	audio, _ := strconv.Atoi(q.Get("audio"))
@@ -365,12 +369,12 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, it *CatItem, 
 	args = append(args, "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "pipe:1")
 
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(r.Context(), s.ffmpeg, args...) // killed when the viewer leaves
+	cmd := exec.CommandContext(ctx, s.ffmpeg, args...) // killed when the viewer leaves or seeks
 	cmd.Stdout, cmd.Stderr = w, &stderr
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Cache-Control", "no-store")
 	s.log("▶ %s (%s)  %s  [converted, from %s]", who, clientIP(r), it.Title, time.Duration(start)*time.Second)
-	if err := cmd.Run(); err != nil && r.Context().Err() == nil {
+	if err := cmd.Run(); err != nil && ctx.Err() == nil {
 		s.log("ffmpeg: %v: %s", err, lastLine(stderr.String()))
 	}
 }

@@ -81,13 +81,13 @@ async function render() {
   }
   document.title = library.name;
   switch (page) {
-    case "shows": return renderList("shows", library.shows.map(asShow), query);
+    case "shows": return backAtTitle(renderList("shows", library.shows.map(asShow), query));
     case "movie": return renderMovie(arg);
     case "show": return renderShow(arg);
-    case "browse": return renderBrowse(arg, decodeURIComponent(rest.join("/")));
+    case "browse": return backAtTitle(renderBrowse(arg, decodeURIComponent(rest.join("/"))));
     case "downloads": return me.admin ? renderDownloads() : (location.hash = "#movies");
     case "users": return me.admin ? renderUsers() : (location.hash = "#movies");
-    default: return renderList("movies", library.movies, query);
+    default: return backAtTitle(renderList("movies", library.movies, query));
   }
 }
 
@@ -98,6 +98,11 @@ const icons = {
   downloads: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"/></svg>',
   users: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
   play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" fill="currentColor" stroke="none"/></svg>',
+  fullscreen: '<svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>',
+  pause: '<svg viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor" stroke="none"/></svg>',
+  sound: '<svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M15.5 9a4.5 4.5 0 0 1 0 6M18 6.5a8 8 0 0 1 0 11"/></svg>',
+  muted: '<svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>',
+  pip: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><rect x="12" y="11.5" width="7" height="5.5" rx="1" fill="currentColor"/></svg>',
 };
 const icon = name => h("span", { class: "icon", innerHTML: icons[name] });
 
@@ -111,7 +116,8 @@ function setAmbient(url) {
 }
 
 function shell(page, ...content) {
-  const link = (id, label, extra) => h("a", { href: "#" + id, class: page === id ? "active" : "" }, icon(id), h("span", { class: "label" }, label), extra);
+  const link = (id, label, extra) => h("a", { href: "#" + id, class: page === id ? "active" : "", onclick: () => { freshVisit = true; } },
+    icon(id), h("span", { class: "label" }, label), extra);
   setAmbient(pendingAmbient);
   pendingAmbient = null;
   // The sections: in the header on a wide screen, in a floating tab bar at
@@ -204,14 +210,45 @@ function grid(items, emptyText) {
   }
   return h("div", { class: "grid" }, items.map(x => {
     const watched = isShow(x) ? episodesOf(x).every(e => e.played) : x.played;
-    const card = h("a", { class: "card", href: `#${isShow(x) ? "show" : "movie"}/${x.id}` },
+    const card = h("a", { class: "card", href: `#${isShow(x) ? "show" : "movie"}/${x.id}`, onclick: () => openedFrom(x) },
       h("div", { class: "poster", style: x.poster ? `background-image:${image(x.id, "poster")}` : "" },
         !x.poster && x.title, watched && h("span", { class: "seen", title: "Watched" }, "✓"), !isShow(x) && progressBar(x)),
       h("div", { class: "title" }, x.title),
       h("div", { class: "sub" }, [!sameText(x.localTitle, x.title) && x.localTitle, x.year || null, isShow(x) && "series"].filter(Boolean).join(" · ")));
     card.dataset.text = `${x.title} ${x.localTitle || ""} ${x.originalTitle || ""} ${x.year || ""}`.toLowerCase();
+    card.dataset.id = x.id;
     return card;
   }));
+}
+
+// Coming back from a title to the list it was opened from — with its "←"
+// button or the browser's Back — the list is scrolled to that title again.
+// A section chosen in the header starts at the top as usual.
+let cameFrom = null; // {hash, id}: the list a title was opened from
+let freshVisit = false; // a section was chosen in the header
+
+function openedFrom(x) {
+  cameFrom = { hash: location.hash || "#movies", id: x.id };
+}
+
+function backAtTitle() {
+  const fresh = freshVisit;
+  freshVisit = false;
+  if (fresh || !cameFrom || cameFrom.hash !== (location.hash || "#movies")) return;
+  const card = document.querySelector(`.card[data-id="${cameFrom.id}"]`);
+  if (!card) return;
+  card.scrollIntoView({ block: "center" });
+  card.classList.add("came-from");
+  setTimeout(() => card.classList.remove("came-from"), 1600);
+}
+
+// backLink leads from a title's page back to the list it was opened from,
+// or to the whole section when it was opened some other way.
+function backLink(x) {
+  const hash = cameFrom && cameFrom.id === x.id ? cameFrom.hash : isShow(x) ? "#shows" : "#movies";
+  if (!cameFrom || cameFrom.id !== x.id) cameFrom = { hash, id: x.id };
+  const label = hash.startsWith("#shows") ? "Shows" : hash.startsWith("#movies") ? "Movies" : "Back";
+  return h("a", { class: "button small back", href: hash }, "← " + label);
 }
 
 // renderList is the Movies or Shows page: every title, narrowed by the
@@ -336,6 +373,7 @@ function hero(x, ...rest) {
   ].filter(Boolean);
   pendingAmbient = x.backdrop ? image(x.id, "backdrop") : x.poster ? image(x.id, "poster") : null;
   return h("div", { class: x.backdrop ? "hero" : "hero plain", style: x.backdrop ? `--backdrop:${image(x.id, "backdrop")}` : "" },
+    backLink(x),
     h("div", { class: "inner" },
       x.poster && h("img", { class: "poster", src: `/api/image/${x.id}/poster`, alt: "" }),
       h("div", { class: "info glass" },
@@ -455,16 +493,20 @@ function renderShow(id) {
 //   resolve: request body -> Promise
 //   st:      the form's state, kept by the caller across redraws
 //   fill:    the choice fills in a form instead of filing the files: a
-//            series is then simply taken as a movie, nothing is asked
-function identifyForm({ unit, search, resolve, st, extra, fill }) {
+//            series is then simply taken as a movie, nothing is asked, and
+//            a click on a candidate is the choice, without a confirmation
+//   ask:     with fill, the button for an ID says "Set by ID" (a choice
+//            made in advance, not a form)
+// resolve gets the request body and the candidate picked (none for an ID).
+function identifyForm({ unit, search, resolve, st, extra, fill, ask }) {
   Object.assign(st, { query: "", picked: null, candidates: null, asMovie: true, season: 1, episode: 1, ref: "", ...st });
   const holder = h("div", {});
   const error = h("p", { class: "error" });
   const pickedSeries = () => !fill && st.picked && st.picked.kind === "tv" && unit.kind === "movie";
-  const submit = async body => {
+  const submit = async (body, candidate) => {
     error.textContent = "";
     holder.classList.add("busy");
-    try { await resolve(body); } catch (err) { error.textContent = err.message; }
+    try { await resolve(body, candidate); } catch (err) { error.textContent = err.message; }
     holder.classList.remove("busy");
   };
 
@@ -481,7 +523,11 @@ function identifyForm({ unit, search, resolve, st, extra, fill }) {
       if (c.sourceName !== last) groups.push(h("div", { class: "group" }, last = c.sourceName));
       groups.push(h("button", {
         type: "button", class: st.picked === c ? "picked" : "",
-        onclick: () => { st.picked = c; show(); },
+        onclick: () => {
+          st.picked = c;
+          show();
+          if (fill) submit({ source: c.source, id: c.id, kind: c.kind }, c);
+        },
       }, c.title, c.year ? ` (${c.year})` : "", c.originalTitle && c.originalTitle !== c.title ? ` — ${c.originalTitle}` : "",
         c.kind === "tv" && h("span", { class: "tag" }, "series")));
     }
@@ -493,12 +539,12 @@ function identifyForm({ unit, search, resolve, st, extra, fill }) {
     holder.replaceChildren(...[
       h("div", { class: "candidates" }, groups.length ? groups : h("p", { class: "dim" }, "Nothing found. Try another title or paste an ID.")),
       pickedSeries() && h("div", { class: "row" }, asMovie, !st.asMovie && ["Season", season, "Episode", episode]),
-      h("div", { class: "row", style: "margin-top:10px" },
+      !fill && h("div", { class: "row", style: "margin-top:10px" },
         h("button", {
           type: "button", class: "primary", disabled: !st.picked,
           onclick: () => submit({ source: st.picked.source, id: st.picked.id, kind: st.picked.kind,
             asMovie: pickedSeries() && st.asMovie, season: st.season, episode: pickedSeries() && !st.asMovie ? st.episode : 0 }),
-        }, fill ? "Fill in the fields" : "This is it")),
+        }, "This is it")),
     ].filter(Boolean));
   }
 
@@ -508,12 +554,12 @@ function identifyForm({ unit, search, resolve, st, extra, fill }) {
     "aria-label": "ID or link", oninput: () => st.ref = ref.value });
   if (st.candidates) show(); else find();
   return h("div", { class: "unit" },
-    h("div", {}, h("b", {}, unit.kind === "tv" ? "Series: " : "Movie: "), unit.title || "?", unit.year ? ` (${unit.year})` : ""),
+    h("div", {}, h("b", {}, { tv: "Series: ", movie: "Movie: " }[unit.kind] || ""), unit.title || "?", unit.year ? ` (${unit.year})` : ""),
     unit.files && h("div", { class: "files" }, unit.files.join(", ")),
     h("div", { class: "row", style: "margin-top:10px" }, query, h("button", { type: "button", onclick: find }, "Search")),
     holder,
     h("div", { class: "row", style: "margin-top:10px" }, ref,
-      h("button", { type: "button", onclick: () => st.ref.trim() && submit({ ref: st.ref, asMovie: unit.kind === "movie" }) }, fill ? "Fill in by ID" : "Set by ID"),
+      h("button", { type: "button", onclick: () => st.ref.trim() && submit({ ref: st.ref, asMovie: unit.kind === "movie" }) }, fill && !ask ? "Fill in by ID" : "Set by ID"),
       extra),
     error);
 }
@@ -596,7 +642,9 @@ const textCast = text => text.split("\n").map(line => line.trim()).filter(Boolea
 // openEdit is the administrator's sheet for a title: its description, which
 // can be filled in from a catalogue, its artwork, and the screenshots of a
 // movie or the episodes of a series.
-function openEdit(x) {
+//   opts.find: open with the search of the catalogues showing
+//   opts.stay: stay on the page it was opened from after saving
+function openEdit(x, opts = {}) {
   const movie = !isShow(x);
   let dirty = false; // something was saved: the page is drawn anew on closing
   const saved = () => { dirty = true; library = null; };
@@ -655,7 +703,7 @@ function openEdit(x) {
         h("span", {}, "Rename the files after the title and year"));
       const filledNote = h("p", { class: "filled hidden" });
 
-      const fillIn = r => {
+      const fillIn = (r, picked) => {
         const m = r.meta;
         f.title.value = m.title || ""; f.originalTitle.value = m.originalTitle || ""; f.localTitle.value = m.localTitle || "";
         f.year.value = m.year || ""; f.released.value = m.released || ""; f.status.value = m.status || "";
@@ -671,16 +719,18 @@ function openEdit(x) {
         if (!movie) renameRow.lastChild.textContent = `Rename the files, and take the titles, descriptions and stills of the episodes from ${r.sourceName}`;
         renameRow.classList.remove("hidden");
         rename.checked = true;
-        filledNote.textContent = `Filled in from ${r.sourceName}. Check the fields, then save.`;
+        // IMDb, Wikidata only find titles: the details come from another catalogue.
+        filledNote.textContent = (picked && picked.sourceName !== r.sourceName
+          ? `Found on ${picked.sourceName}, filled in from ${r.sourceName}.` : `Filled in from ${r.sourceName}.`) + " Check the fields, then save.";
         filledNote.classList.remove("hidden");
         finder.classList.add("hidden");
         f.title.focus();
       };
-      const finder = h("div", { class: "finder hidden" },
+      const finder = h("div", { class: opts.find ? "finder" : "finder hidden" },
         identifyForm({
           unit: { kind: movie ? "movie" : "tv", title: m.title, year: m.year }, st: {}, fill: true,
           search: q => api(`fix/${x.id}/search?q=${encodeURIComponent(q)}`),
-          resolve: async body => fillIn(await api(`meta/${x.id}/lookup`, { json: body })),
+          resolve: async (body, picked) => fillIn(await api(`meta/${x.id}/lookup`, { json: body }), picked),
         }));
       const error = h("p", { class: "error" });
       const save = h("button", { class: "primary", type: "submit" }, "Save");
@@ -688,7 +738,7 @@ function openEdit(x) {
         h("div", { class: "row" },
           h("button", { type: "button", onclick: () => finder.classList.toggle("hidden") }, "Fill in from a catalogue…"),
           h("span", { class: "dim" }, "Search all sources and pick the right one: the fields are filled in for you to check.")),
-        m.noFolder && h("p", { class: "filled warn" }, "The episodes are not in a folder of their own yet. Fill the fields in from a catalogue and let the files be renamed: that files them into one."),
+        m.noFolder ? h("p", { class: "filled warn" }, "The episodes are not in a folder of their own yet. Fill the fields in from a catalogue and let the files be renamed: that files them into one.") : "",
         finder, filledNote,
         h("form", {
           class: "meta-form",
@@ -715,7 +765,8 @@ function openEdit(x) {
               saved();
               // A renamed title has a new address: a movie goes back to the
               // list, a series to its new page.
-              if (movie && rename.checked) location.hash = "#movies";
+              if (opts.stay);
+              else if (movie && rename.checked) location.hash = "#movies";
               else if (res.id && res.id !== x.id) location.hash = "#show/" + res.id;
               close();
               if (res.problems && res.problems.length) alert("Saved, but: " + res.problems.join("; "));
@@ -848,7 +899,38 @@ async function play(item, startAt, queue) {
   const note = h("div", { class: "note hidden" });
   const slider = h("input", { type: "range", min: 0, max: Math.max(1, Math.floor(duration)), step: 1, "aria-label": "Seek" });
   const clock = h("span", {});
-  const seek = h("div", { class: "seek glass hidden" }, slider, clock);
+  // A converted stream is made while it plays: the browser does not know
+  // its length, and its own controls offer no seeking — Safari's full
+  // screen even calls it a live broadcast. So a converted video gets these
+  // controls instead of the browser's, and goes full screen with them.
+  const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement;
+  const canFullscreen = !!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
+  let leftFullscreen = 0;
+  function toggleFullscreen() {
+    if (fsElement()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else if (canFullscreen) (box.requestFullscreen || box.webkitRequestFullscreen).call(box);
+    else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen(); // an iPhone: only the bare video can
+  }
+  const togglePlay = () => video.paused ? video.play().catch(() => {}) : video.pause();
+  const control = (name, label, action) => h("button", { class: "small", title: label, "aria-label": label, onclick: action }, icon(name));
+  const playButton = control("play", "Play (Space)", togglePlay);
+  const muteButton = control("sound", "Sound", () => { video.muted = !video.muted; });
+  const volume = h("input", { type: "range", class: "volume", min: 0, max: 1, step: 0.05, value: 1, "aria-label": "Volume",
+    oninput: () => { video.volume = +volume.value; video.muted = video.volume === 0; } });
+  const pipButton = (document.pictureInPictureEnabled || video.webkitSupportsPresentationMode) && control("pip", "Picture in picture", () => {
+    if (video.webkitSetPresentationMode) video.webkitSetPresentationMode(video.webkitPresentationMode === "picture-in-picture" ? "inline" : "picture-in-picture");
+    else if (document.pictureInPictureElement) document.exitPictureInPicture();
+    else video.requestPictureInPicture().catch(() => {});
+  });
+  const fullscreen = (canFullscreen || video.webkitEnterFullscreen) && control("fullscreen", "Full screen (F)", toggleFullscreen);
+  const seek = h("div", { class: "seek glass hidden" }, playButton, slider, clock, muteButton, volume, pipButton, fullscreen);
+  const showState = () => {
+    playButton.replaceChildren(icon(video.paused ? "play" : "pause"));
+    muteButton.replaceChildren(icon(video.muted || video.volume === 0 ? "muted" : "sound"));
+    if (!volume.matches(":active")) volume.value = video.muted ? 0 : video.volume;
+  };
+  for (const ev of ["play", "pause", "volumechange"]) video.addEventListener(ev, showState);
+  showState();
   const audioSelect = (info.audio || []).length > 1 && h("select", {
     "aria-label": "Audio track",
     onchange: () => { audio = +audioSelect.value; convert(position()); },
@@ -876,30 +958,43 @@ async function play(item, startAt, queue) {
   function direct(at) {
     endSession();
     converted = false; offset = 0; say("");
+    box.classList.remove("custom", "idle");
+    video.controls = true; // the browser's own: the file has a length, they can seek
     mode.textContent = "Does not play? Convert";
     seek.classList.add("hidden");
     video.src = `/api/stream/${info.id}`;
     video.addEventListener("loadedmetadata", () => { if (at > 0) video.currentTime = at; }, { once: true });
     subtitles(0);
   }
+  // convert plays a stream the server converts from a moment of the video.
+  // The new position counts only once the server has started it: if it
+  // cannot, the seek bar goes back to where the video really is.
   async function convert(at) {
     if (!info.canTranscode) return say("The browser cannot play this file, and the server has no ffmpeg to convert it. Download the file and open it in a player.");
-    endSession();
-    converted = true; offset = Math.max(0, Math.floor(at || 0));
+    const from = Math.max(0, Math.floor(at || 0));
     mode.textContent = "Play the original";
-    say("");
     seek.classList.remove("hidden");
-    slider.value = offset;
+    video.controls = false; // ours instead, see above
+    box.classList.add("custom"); // over the picture, hidden while it plays
+    wake();
     if (nativeHLS) {
+      say("");
       try {
-        const started = await api(`hls/start/${info.id}`, { json: { start: offset, audio } });
+        // The server ends this viewer's previous stream itself.
+        const started = await api(`hls/start/${info.id}`, { json: { start: from, audio } });
         if (closed) return api("hls/s/" + started.id, { method: "DELETE" }).catch(() => {});
         session = started.id;
+        converted = true; offset = from;
         video.src = started.url;
-      } catch (err) { return say(err.message); }
+      } catch (err) {
+        slider.value = position();
+        return say(/busy/.test(err.message) ? "The server is busy converting other videos: try again in a moment." : err.message);
+      }
     } else {
+      converted = true; offset = from; say("");
       video.src = `/api/transcode/${info.id}?start=${offset}&audio=${audio}`;
     }
+    slider.value = offset;
     subtitles(offset);
     video.play().catch(() => {});
   }
@@ -954,18 +1049,61 @@ async function play(item, startAt, queue) {
     closed = true;
     clearInterval(ticker);
     clearInterval(watchdog);
+    clearTimeout(idleTimer);
     const at = position();
     video.pause(); video.removeAttribute("src"); video.load(); // stops the download and the conversion
     endSession();
+    if (fsElement()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
     box.remove();
     document.removeEventListener("keydown", onKey);
+    document.removeEventListener("fullscreenchange", onFullscreen);
+    document.removeEventListener("webkitfullscreenchange", onFullscreen);
     (at > 0 ? report(at) : Promise.resolve()).then(render);
   }
-  const onKey = e => { if (e.key === "Escape") close(); };
+  const onKey = e => {
+    wake();
+    // Escape first leaves full screen; only the next one closes the player.
+    if (e.key === "Escape" && !fsElement() && Date.now() - leftFullscreen > 500) close();
+    else if (!converted || e.target.closest("input, select, button")) return;
+    else if ((e.key === "f" || e.key === "F") && fullscreen) toggleFullscreen();
+    else if (e.key === " " || e.key === "k") { e.preventDefault(); togglePlay(); }
+  };
   document.addEventListener("keydown", onKey);
+  const onFullscreen = () => { if (!fsElement()) leftFullscreen = Date.now(); };
+  document.addEventListener("fullscreenchange", onFullscreen);
+  document.addEventListener("webkitfullscreenchange", onFullscreen);
+  // Our controls lie over the picture and fade away while the video plays
+  // and nobody touches anything; a move of the mouse, a tap or a key brings
+  // them back. (They lie over it only without the browser's controls:
+  // Safari puts its own buttons in the corners of the video.)
+  let idleTimer = null, wokenByTap = false;
+  function wake() {
+    box.classList.remove("idle");
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      const busy = video.paused || slider.matches(":active") || box.querySelector(".top:hover, .seek:hover, select:focus");
+      if (converted && !busy && !closed) box.classList.add("idle");
+    }, 3000);
+  }
+  box.addEventListener("mousemove", wake);
+  box.addEventListener("keydown", wake);
+  video.addEventListener("pointerdown", () => { wokenByTap = box.classList.contains("idle"); wake(); });
+  for (const ev of ["play", "pause"]) video.addEventListener(ev, wake);
+  // Without the browser's controls a click on the picture pauses, as with
+  // them; a tap that only brings the controls back does not.
+  let clickTimer = null;
+  video.addEventListener("click", () => {
+    if (!converted) return;
+    if (wokenByTap) { wokenByTap = false; return; }
+    clearTimeout(clickTimer);
+    clickTimer = setTimeout(togglePlay, 250); // not when it is the first half of a double click
+  });
+  video.addEventListener("dblclick", () => { if (converted && fullscreen) { clearTimeout(clickTimer); toggleFullscreen(); } });
 
   const startPosition = startAt !== undefined ? startAt : (info.position || 0);
   document.body.append(box);
+  box.tabIndex = -1;
+  box.focus(); // not the page's Play button beneath: Space is for the player now
   // Start converted right away when the server knows the browser cannot play the file.
   if (info.direct === false) convert(startPosition); else direct(startPosition);
 }
@@ -980,6 +1118,17 @@ async function renderDownloads() {
   const error = h("p", { class: "error" });
   const list = h("div", {});
   const open = {}; // unit key -> the state of its form, kept across refreshes
+  const presetOpen = {}; // download id -> the "what is it" form is open
+  let last = []; // the list as last drawn
+
+  // fixFiled opens the edit sheet of a title a download became, searching.
+  async function fixFiled(t) {
+    // Fresh: the list in memory may be older than the download.
+    try { library = await api("library"); } catch (err) { return alert(err.message); }
+    const x = t.kind === "show" ? library.shows.map(asShow).find(s => s.id === t.id) : library.movies.find(m => m.id === t.id);
+    if (!x) return alert("This title is not in the library any more.");
+    openEdit(x, { find: true, stay: true });
+  }
 
   async function add(e) {
     e.preventDefault();
@@ -1001,6 +1150,7 @@ async function renderDownloads() {
   // The periodic refresh does not redraw while the administrator is typing
   // in one of the forms; the answer to an action of theirs always does.
   function draw(downloads, force) {
+    last = downloads;
     refreshBadge(downloads);
     if (!force && list.contains(document.activeElement) && ["INPUT", "SELECT"].includes(document.activeElement.tagName)) return;
     list.replaceChildren(...(downloads.length ? downloads.map(card) : [h("div", { class: "empty" }, "Nothing has been downloaded yet.")]));
@@ -1009,6 +1159,29 @@ async function renderDownloads() {
   function card(d) {
     const act = async (path, options) => { draw(await api(`downloads/${d.id}${path}`, options), true); library = null; };
     const alerting = (path, options) => act(path, options).catch(err => alert(err.message));
+    // While it downloads, what it is can be said in advance.
+    const presetKey = d.id + "/preset";
+    const presetBox = d.state === "downloading" && h("div", { class: "preset" },
+      d.preset ? h("div", { class: "row" },
+        h("span", { class: "grow" }, "Will be filed as ", h("b", {}, d.preset)),
+        h("button", { class: "small", onclick: () => { presetOpen[d.id] = true; draw(last, true); } }, "Change"),
+        h("button", { class: "small", onclick: () => alerting("/preset", { method: "DELETE" }) }, "Let it be recognized"))
+      : !presetOpen[d.id] && h("div", { class: "row" },
+        h("button", { class: "small", onclick: () => { presetOpen[d.id] = true; draw(last, true); } }, "Say what it is…"),
+        h("span", { class: "dim" }, "Pick it now, and it is filed as that when the download finishes.")),
+      presetOpen[d.id] && identifyForm({
+        unit: { title: d.name }, st: open[presetKey] = open[presetKey] || {}, fill: true, ask: true,
+        search: q => api(`downloads/${d.id}/search?q=${encodeURIComponent(q)}`),
+        resolve: async body => { await act("/preset", { json: body }); presetOpen[d.id] = false; delete open[presetKey]; draw(last, true); },
+        extra: h("button", { type: "button", onclick: () => { presetOpen[d.id] = false; draw(last, true); } }, "Cancel"),
+      }));
+    // What it became: links to the titles, and a quick way to correct them.
+    const titles = (d.titles || []).length > 0 && h("div", { class: "filed" },
+      h("div", { class: "dim" }, "In the library:"),
+      d.titles.map(t => h("div", { class: "filed-title" },
+        h("a", { class: "thumb", href: `#${t.kind}/${t.id}`, style: t.poster ? `background-image:${image(t.id, "poster")}` : "" }),
+        h("a", { class: "grow", href: `#${t.kind}/${t.id}` }, fullTitle(t), t.year ? ` (${t.year})` : ""),
+        h("button", { class: "small", onclick: () => fixFiled(t) }, "Wrong? Fix…"))));
     return h("div", { class: "panel glass download" },
       h("div", { class: "head" },
         h("span", { class: "name" }, d.name),
@@ -1018,8 +1191,10 @@ async function renderDownloads() {
       d.state === "downloading" && [
         h("progress", { value: d.done, max: d.total || 1 }),
         h("div", { class: "dim" }, d.total ? `${bytes(d.done)} of ${bytes(d.total)} · ${bytes(d.speed)}/s` : "Connecting…")],
+      presetBox,
       d.error && h("p", { class: "error" }, d.error),
-      d.log && h("pre", { class: "log" }, d.log),
+      titles,
+      d.log && h("details", { class: "log-box", open: d.state !== "done" }, h("summary", { class: "dim" }, "What was done"), h("pre", { class: "log" }, d.log)),
       (d.pending || []).map(u => identifyForm({
         unit: u, st: open[d.id + "/" + u.key] = open[d.id + "/" + u.key] || {},
         search: q => api(`downloads/${d.id}/search?key=${encodeURIComponent(u.key)}&q=${encodeURIComponent(q)}`),
@@ -1032,7 +1207,7 @@ async function renderDownloads() {
     h("form", { class: "panel glass form", onsubmit: add },
       h("div", { class: "row" }, source, h("button", { class: "primary" }, "Download")),
       h("div", { class: "row", style: "margin-top:10px" }, h("span", { class: "dim" }, "or a .torrent file:"), file),
-      h("p", { class: "dim", style: "margin-bottom:0" }, "After downloading, the file is identified, renamed and put into Movies or Shows. If the program is not sure, it asks here."),
+      h("p", { class: "dim", style: "margin-bottom:0" }, "After downloading, the file is identified, renamed and put into Movies or Shows. If the program is not sure, it asks here; while it downloads, you can also say what it is."),
       error),
     list);
   const refresh = async () => { try { draw(await api("downloads")); } catch { /* shown on the next tick */ } };

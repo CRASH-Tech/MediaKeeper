@@ -285,7 +285,10 @@ main { padding: 26px 24px 60px; max-width: 1500px; margin: 0 auto; }
   -webkit-mask-composite: source-in;
   mask-composite: intersect;
 }
-.hero.plain { padding-top: 30px; }
+.hero.plain { padding-top: 76px; }
+/* Back to the list, at the left edge of the page's column. */
+.hero .back { position: absolute; top: 22px; left: max(24px, calc((100% - var(--page)) / 2)); z-index: 2; }
+.card.came-from .poster { box-shadow: 0 0 0 3px var(--accent), 0 12px 40px rgba(0, 0, 0, .45); transition: box-shadow .4s; }
 .hero .inner { position: relative; display: flex; gap: 28px; align-items: flex-end; max-width: var(--page); margin: 0 auto; }
 .hero img.poster {
   width: 220px; border-radius: var(--r-lg); flex: none;
@@ -311,7 +314,8 @@ main { padding: 26px 24px 60px; max-width: 1500px; margin: 0 auto; }
   .hero .inner { flex-direction: column; align-items: stretch; gap: 16px; }
   .hero img.poster { width: 130px; }
   .hero .info { padding: 20px; }
-  .hero.plain { padding-top: 20px; }
+  .hero.plain { padding-top: 62px; }
+  .hero .back { top: 16px; left: 14px; }
 }
 
 .details { max-width: var(--page); margin: 22px auto 0; padding: 6px 26px; border-radius: var(--r-xl); }
@@ -338,7 +342,7 @@ main { padding: 26px 24px 60px; max-width: 1500px; margin: 0 auto; }
   margin: 26px auto 12px max(0px, calc((100% - var(--page)) / 2)); /* at the left edge of the column */
   background: var(--glass); border: 1px solid var(--glass-rim); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
   /* Many seasons stay in one row and scroll inside the capsule. */
-  position: relative; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none;
+  position: relative; max-width: min(100%, var(--page)); overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none;
 }
 .tabs::-webkit-scrollbar { display: none; }
 /* The side with more seasons behind it fades out. */
@@ -383,6 +387,21 @@ main { padding: 26px 24px 60px; max-width: 1500px; margin: 0 auto; }
   --glass: rgba(30, 30, 34, .6); --glass-rim: rgba(255, 255, 255, .18); --glass-rim-top: rgba(255, 255, 255, .35);
 }
 .player .seek input { flex: 1; }
+.player .seek { gap: 8px; padding: 6px 10px 6px 8px; }
+.player .seek .volume { flex: none; width: 90px; }
+@media (max-width: 720px), (pointer: coarse) { .player .seek .volume { display: none; } /* phones and tablets: their own buttons */ }
+.player .seek button { flex: none; color: #fff; font-size: 16px; line-height: 1; padding: 6px 10px; --glass-strong: rgba(255, 255, 255, .14); --glass-hover: rgba(255, 255, 255, .24); }
+/* A converted video has our controls, over the picture: they fade while it
+   plays and come back with a move of the mouse or a tap. */
+.player.custom .top, .player.custom .seek { position: absolute; left: 0; right: 0; z-index: 2; transition: opacity .35s ease; }
+.player.custom .top { top: 0; }
+.player.custom .seek { bottom: 0; }
+.player.custom .note { position: absolute; top: calc(max(10px, env(safe-area-inset-top)) + 64px); left: 50%; transform: translateX(-50%); z-index: 3; margin: 0; }
+.player.custom.idle .top, .player.custom.idle .seek { opacity: 0; pointer-events: none; }
+.player.custom.idle { cursor: none; }
+.player:focus { outline: none; }
+.player:fullscreen { width: 100%; height: 100%; }
+.player:-webkit-full-screen { width: 100%; height: 100%; } /* apart: a browser drops a rule with a selector it does not know */
 .player .note {
   flex: none; align-self: center; margin: 0 12px 10px; max-width: calc(100% - 24px);
   padding: 8px 16px; border-radius: var(--capsule); font-size: 13px;
@@ -396,6 +415,15 @@ main { padding: 26px 24px 60px; max-width: 1500px; margin: 0 auto; }
 .row .grow { flex: 1; min-width: 200px; }
 .download .head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .download .head .name { font-weight: 600; flex: 1; min-width: 200px; overflow-wrap: anywhere; }
+.download .preset { margin-top: 10px; }
+.download .preset .unit { margin-top: 10px; }
+.download .filed { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.filed-title { display: flex; align-items: center; gap: 12px; padding: 6px; border-radius: var(--r-md); background: var(--glass); border: 1px solid var(--glass-rim); }
+.filed-title .thumb { width: 40px; aspect-ratio: 2 / 3; flex: none; border-radius: 8px; background: var(--glass-strong) center / cover no-repeat; }
+.filed-title .grow { font-weight: 600; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.filed-title .grow:hover { text-decoration: underline; }
+.download .log-box { margin-top: 10px; }
+.download .log-box summary { cursor: pointer; font-size: 13px; }
 .state { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; padding: 3px 10px; border-radius: var(--capsule); background: var(--glass-strong); }
 .state.done { color: var(--good); }
 .state.error { color: var(--bad); }
