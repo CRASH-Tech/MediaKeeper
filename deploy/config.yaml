@@ -1,0 +1,8 @@
+# MediaKeeper keeps its settings in its database (mediakeeper.db) and changes
+# them in the web interface, under Settings, or with mediakeeper -setup.
+#
+# Settings put into this file (as in config.yaml.old, if there is one) are
+# taken into the database at the next start, and the file is cleared again.
+# Only where the database is stays here; -db and MEDIAKEEPER_DB do the same.
+# server:
+#   database: /var/lib/mediakeeper/mediakeeper.db

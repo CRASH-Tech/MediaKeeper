@@ -21,7 +21,7 @@
 services:
   mediakeeper:
     image: crashntech/mediakeeper:latest
-    # build: .                              # or build from the sources here
+    # build: ..                             # or build from the sources (the repository root)
     container_name: mediakeeper
     restart: unless-stopped
 

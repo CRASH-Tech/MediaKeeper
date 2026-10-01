@@ -128,8 +128,8 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	debug := fs.Bool("debug", os.Getenv("MEDIAKEEPER_DEBUG") != "", "with -serve: log every request of the Jellyfin apps, and in full in jellyfin-debug.log next to the settings (also MEDIAKEEPER_DEBUG=1)")
 	hwFlag := fs.String("hwaccel", "", "with -serve: convert video on a graphics card: auto, vaapi, qsv, nvenc or none (default none; also MEDIAKEEPER_HWACCEL)")
 	cacheFlag := fs.String("cache", "", "with -serve: the folder of screenshots and episode stills (default: .cache in the first library folder; also MEDIAKEEPER_CACHE)")
-	dbFlag := fs.String("db", "", "with -serve: the database of accounts, ratings, watchlists and history (default: mediakeeper.db next to the settings; also MEDIAKEEPER_DB)")
-	configFlag := fs.String("config", "", "the settings file, or a folder for config.yaml in it (default: next to the program; also MEDIAKEEPER_CONFIG)")
+	dbFlag := fs.String("db", "", "the database of settings, accounts, ratings, watchlists and history, or a folder for it (default: mediakeeper.db next to config.yaml; also MEDIAKEEPER_DB)")
+	configFlag := fs.String("config", "", "the folder of config.yaml and the database, or a .yaml file (default: next to the program; also MEDIAKEEPER_CONFIG)")
 	var given []Root
 	fs.Var(rootList{rootMovies, &given}, "movies", "a library folder of movies only; may be repeated")
 	fs.Var(rootList{rootShows, &given}, "shows", "a library folder of series only; may be repeated")

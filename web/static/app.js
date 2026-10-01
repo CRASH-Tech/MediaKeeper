@@ -628,7 +628,7 @@ function mineRow(x) {
   };
   function draw() {
     const note = h("textarea", { rows: 3, value: x.note || "", placeholder: "Only you see this note", "aria-label": "Your note" });
-    row.replaceChildren(
+    fill(row,
       h("div", { class: "mine-bar" },
         h("span", { class: "dim" }, "Your rating"),
         stars(x.myRating || 0, v => set({ rating: v }, { myRating: v })),
