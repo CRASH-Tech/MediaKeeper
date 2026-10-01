@@ -175,6 +175,9 @@ header input[type=search] { width: 220px; padding: 7px 16px; }
 header .account { color: var(--dim); font-size: 14px; }
 
 main { padding: 26px 24px 60px; max-width: 1500px; margin: 0 auto; }
+/* The column of a title's page: the card, screenshots, seasons, episodes
+   and details share its width and are centred together. */
+:root { --page: 1180px; }
 
 /* On a phone the sections move to a floating tab bar at the bottom. (It is
    outside the header: a blurred element would trap a fixed child.) */
@@ -270,20 +273,25 @@ main { padding: 26px 24px 60px; max-width: 1500px; margin: 0 auto; }
 
 /* The backdrop fades into the page; the description floats on glass. */
 .hero { position: relative; margin: -26px -24px 0; padding: 170px 24px 26px; }
-/* The backdrop melts into the blurred picture behind the page. */
+/* The backdrop melts into the blurred picture behind the page on every
+   side: no edge or corner of it shows, not even under the rounded header. */
 .hero::before {
   content: ""; position: absolute; inset: 0; pointer-events: none;
   background: var(--backdrop, none) center 22% / cover no-repeat;
-  -webkit-mask-image: linear-gradient(180deg, #000 30%, rgba(0, 0, 0, .55) 65%, transparent 100%);
-  mask-image: linear-gradient(180deg, #000 30%, rgba(0, 0, 0, .55) 65%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 120px, #000 32%, rgba(0, 0, 0, .55) 66%, transparent 100%),
+    linear-gradient(90deg, transparent 0, #000 9%, #000 91%, transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 120px, #000 32%, rgba(0, 0, 0, .55) 66%, transparent 100%),
+    linear-gradient(90deg, transparent 0, #000 9%, #000 91%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
 }
 .hero.plain { padding-top: 30px; }
-.hero .inner { position: relative; display: flex; gap: 28px; align-items: flex-end; max-width: 1460px; margin: 0 auto; }
+.hero .inner { position: relative; display: flex; gap: 28px; align-items: flex-end; max-width: var(--page); margin: 0 auto; }
 .hero img.poster {
   width: 220px; border-radius: var(--r-lg); flex: none;
   box-shadow: 0 24px 60px rgba(0, 0, 0, .55), 0 0 0 1px rgba(255, 255, 255, .16);
 }
-.hero .info { flex: 1; min-width: 0; max-width: 860px; padding: 26px 28px; border-radius: var(--r-xl); }
+.hero .info { flex: 1; min-width: 0; padding: 26px 28px; border-radius: var(--r-xl); }
 .hero .meta { color: var(--dim); margin: 4px 0 18px; font-weight: 500; }
 .hero .meta a { color: inherit; text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 3px; }
 .hero .meta a:hover { color: var(--text); }
@@ -298,13 +306,15 @@ main { padding: 26px 24px 60px; max-width: 1500px; margin: 0 auto; }
 .hero .info:has(.edit) h1 { padding-right: 64px; }
 @media (max-width: 720px) {
   .hero { margin: -20px -14px 0; padding: 90px 14px 18px; }
+  .hero::before { -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 70px, #000 32%, rgba(0, 0, 0, .55) 66%, transparent 100%);
+    mask-image: linear-gradient(180deg, transparent 0, #000 70px, #000 32%, rgba(0, 0, 0, .55) 66%, transparent 100%); }
   .hero .inner { flex-direction: column; align-items: stretch; gap: 16px; }
   .hero img.poster { width: 130px; }
   .hero .info { padding: 20px; }
   .hero.plain { padding-top: 20px; }
 }
 
-.details { max-width: 1060px; margin: 22px 0 0; padding: 6px 26px; border-radius: var(--r-xl); }
+.details { max-width: var(--page); margin: 22px auto 0; padding: 6px 26px; border-radius: var(--r-xl); }
 .info-group { display: grid; grid-template-columns: 140px 1fr; gap: 8px 20px; padding: 16px 0; border-bottom: 1px solid var(--line); }
 .info-group:last-child { border-bottom: 0; }
 .info-group h2 { margin: 4px 0 0; font-size: 12px; font-weight: 700; color: var(--faint); text-transform: uppercase; letter-spacing: .07em; }
@@ -324,17 +334,29 @@ main { padding: 26px 24px 60px; max-width: 1500px; margin: 0 auto; }
 
 /* Seasons as a segmented control, episodes as a list. */
 .tabs {
-  display: inline-flex; gap: 3px; flex-wrap: wrap; margin: 26px 0 12px; padding: 4px; border-radius: var(--capsule);
+  display: flex; width: fit-content; gap: 3px; padding: 4px; border-radius: var(--capsule);
+  margin: 26px auto 12px max(0px, calc((100% - var(--page)) / 2)); /* at the left edge of the column */
   background: var(--glass); border: 1px solid var(--glass-rim); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+  /* Many seasons stay in one row and scroll inside the capsule. */
+  position: relative; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none;
 }
-.tabs button { background: transparent; border-color: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; color: var(--dim); padding: 6px 16px; }
+.tabs::-webkit-scrollbar { display: none; }
+/* The side with more seasons behind it fades out. */
+.tabs.more-left { -webkit-mask-image: linear-gradient(to right, transparent, #000 40px); mask-image: linear-gradient(to right, transparent, #000 40px); }
+.tabs.more-right { -webkit-mask-image: linear-gradient(to left, transparent, #000 40px); mask-image: linear-gradient(to left, transparent, #000 40px); }
+.tabs.more-left.more-right {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent);
+}
+.tabs button { flex: none; white-space: nowrap; background: transparent; border-color: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; color: var(--dim); padding: 6px 16px; }
 .tabs button.active { background: var(--glass-hover); color: var(--text); box-shadow: 0 2px 8px rgba(0, 0, 0, .18), inset 0 1px 0 rgba(255, 255, 255, .25); }
-.episode { display: flex; gap: 16px; padding: 12px; border-radius: var(--r-lg); cursor: pointer; align-items: flex-start; transition: background .2s; max-width: 1060px; }
+.episode { display: flex; gap: 16px; padding: 12px; border-radius: var(--r-lg); cursor: pointer; align-items: flex-start; transition: background .2s; max-width: var(--page); margin: 0 auto; }
 .episode:hover { background: var(--glass); box-shadow: inset 0 0 0 1px var(--glass-rim); }
 .episode .thumb {
   width: 210px; flex: none; aspect-ratio: 16 / 9; border-radius: var(--r-sm); position: relative; overflow: hidden;
   background: var(--glass-strong) center / cover no-repeat; box-shadow: 0 6px 20px rgba(0, 0, 0, .3), inset 0 0 0 1px rgba(255, 255, 255, .12);
 }
+.episode .thumb.whole { background-size: contain; }
 .episode .body { flex: 1; min-width: 0; }
 .episode .name { font-weight: 600; font-size: 16px; }
 .episode .plot { color: var(--dim); font-size: 14px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-top: 3px; }
@@ -415,7 +437,7 @@ th { color: var(--faint); font-weight: 700; font-size: 12px; text-transform: upp
 }
 
 /* Screenshots: a strip under the title, a viewer over the page. */
-.screens { margin: 26px 0 0; max-width: 1060px; }
+.screens { margin: 26px auto 0; max-width: var(--page); }
 .screens h2 { margin: 0 0 10px 4px; font-size: 12px; font-weight: 700; color: var(--faint); text-transform: uppercase; letter-spacing: .07em; }
 .shots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; position: relative; }
 @media (max-width: 720px) { .shots { grid-template-columns: repeat(2, 1fr); } }

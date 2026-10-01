@@ -788,7 +788,8 @@ func (c *jfContext) dto(e jfEntry, full bool) map[string]any {
 				d["IndexNumberEnd"] = it.EpisodeEnd
 			}
 			seriesFields(it.Show)
-			if image("Primary", it.Thumb); it.Thumb != "" {
+			if still := s.episodeStill(it); still != "" {
+				image("Primary", still)
 				d["PrimaryImageAspectRatio"] = 1.7777777777777777
 			}
 		}

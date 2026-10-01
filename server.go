@@ -217,7 +217,9 @@ func (s *Server) login(r *http.Request, name, password, device string) (*User, s
 var errTooManyLogins = errors.New("too many failed attempts, try again in a few minutes")
 
 // imagePath finds the image of a movie, episode, series or season. An
-// episode without a still falls back to its season and series posters.
+// episode's picture is its still, or the frame taken from it; without
+// either, a thumb is the series backdrop (as wide as a still) and a poster
+// falls back to the season and series posters.
 func (s *Server) imagePath(cat *Catalog, id, kind string) string {
 	backdrop := kind == "backdrop"
 	if it := cat.items[id]; it != nil {
@@ -228,8 +230,10 @@ func (s *Server) imagePath(cat *Catalog, id, kind string) string {
 			return it.Show.Backdrop
 		case it.Kind == kindMovie:
 			return it.Poster
-		case kind == "thumb" || it.Thumb != "":
-			return it.Thumb
+		case s.episodeStill(it) != "":
+			return s.episodeStill(it)
+		case kind == "thumb":
+			return it.Show.Backdrop
 		}
 		return firstNonEmpty(it.Season.Poster, it.Show.Poster)
 	}

@@ -248,7 +248,14 @@ func (s *Server) itemJSON(it *CatItem, u *User, details bool) map[string]any {
 	if it.Kind == kindEpisode {
 		m["episode"], m["episodeEnd"], m["season"] = it.Episode, it.EpisodeEnd, it.Season.Number
 		m["show"], m["showId"] = it.Show.Title, it.Show.ID
-		m["thumb"] = it.Thumb != ""
+		// The version of its still, so that a new one is not taken from
+		// the browser's cache; "" while there is none.
+		m["thumb"] = ""
+		if still := s.episodeStill(it); still != "" {
+			if st, err := os.Stat(still); err == nil {
+				m["thumb"] = strconv.FormatInt(st.ModTime().Unix(), 36)
+			}
+		}
 	} else {
 		m["poster"], m["backdrop"] = it.Poster != "", it.Backdrop != ""
 	}

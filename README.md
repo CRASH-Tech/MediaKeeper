@@ -265,6 +265,12 @@ They are kept in the hidden folder `.cache/screenshots` of the library,
 which media centers ignore; background work pauses while somebody watches
 a converted video.
 
+An episode without a still of its own (`-thumb.jpg` next to it, which
+catalogues like TVMaze usually provide) gets a frame taken a third of the
+way in, kept in `.cache/stills`; the Jellyfin apps get it too. Until it is
+taken, the list shows the series backdrop, or the whole poster when there
+is no backdrop. A still uploaded in the edit sheet replaces the frame.
+
 An administrator edits a movie with the small **✎ Edit** button in the
 corner of its page:
 

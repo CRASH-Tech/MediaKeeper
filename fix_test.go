@@ -350,3 +350,75 @@ func TestScreenshots(t *testing.T) {
 		t.Errorf("a path outside the screenshots: %d", status)
 	}
 }
+
+// An episode without a still of its own gets a frame taken from it; until
+// then its thumb is the series backdrop, never the poster cropped.
+func TestEpisodeStills(t *testing.T) {
+	ffmpeg, err1 := exec.LookPath("ffmpeg")
+	ffprobe, err2 := exec.LookPath("ffprobe")
+	if err1 != nil || err2 != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	s, srv := serverFixture(t) // (it empties PATH)
+	s.ffmpeg, s.prober.tool = ffmpeg, ffprobe
+	ent := filepath.Join(s.root, "Star Trek - Enterprise (2001)")
+	video := filepath.Join(ent, "Season 01", "Star Trek - Enterprise S01E03 - Fight or Flight.mkv")
+	if out, err := exec.Command(ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=d=30:s=640x360:r=10", "-c:v", "libx264", video).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	os.WriteFile(filepath.Join(ent, "backdrop.jpg"), []byte("BACKDROP"), 0o644)
+	s.refresh()
+
+	kid := newBrowser(t, srv, "kid")
+	episode := func() (id, thumb string) {
+		var lib struct {
+			Shows []struct {
+				Seasons []struct {
+					Episodes []struct{ ID, Title, Thumb string }
+				}
+			}
+		}
+		kid.json("/api/library", &lib)
+		for _, e := range lib.Shows[0].Seasons[0].Episodes {
+			if e.Title == "Episode 3" {
+				return e.ID, e.Thumb
+			}
+		}
+		t.Fatalf("no episode 3: %+v", lib)
+		return
+	}
+	id, thumb := episode()
+	if thumb != "" {
+		t.Errorf("a still before one was taken: %q", thumb)
+	}
+	if _, body := kid.get("/api/image/" + id + "/thumb"); body != "BACKDROP" {
+		t.Errorf("thumb without a still: %q", body)
+	}
+
+	if err := s.screens.takeStill(id); err != nil {
+		t.Fatal(err)
+	}
+	s.refresh()
+	if _, thumb = episode(); thumb == "" {
+		t.Fatalf("the library does not know the still")
+	}
+	status, body := kid.get("/api/image/" + id + "/thumb?v=" + thumb)
+	if status != 200 || !strings.HasPrefix(body, "\xff\xd8") {
+		t.Errorf("still: %d %q", status, body[:min(len(body), 20)])
+	}
+	cat, _ := s.lib.Catalog()
+	if got := s.imagePath(cat, id, "poster"); got != s.screens.stillPath(id) {
+		t.Errorf("the Jellyfin primary image of the episode: %s", got)
+	}
+
+	// A still of its own replaces the frame, which is then removed.
+	os.WriteFile(strings.TrimSuffix(video, ".mkv")+"-thumb.jpg", []byte("OWN"), 0o644)
+	s.refresh()
+	s.screens.prune()
+	if exists(s.screens.stillPath(id)) {
+		t.Errorf("the taken still was kept next to the episode's own")
+	}
+	if _, body := kid.get("/api/image/" + id + "/thumb"); body != "OWN" {
+		t.Errorf("the episode's own still: %q", body)
+	}
+}

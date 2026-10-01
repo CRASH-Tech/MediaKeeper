@@ -379,6 +379,44 @@ function renderMovie(id) {
 
 let openSeason = {}; // show id -> the season tab that is open
 
+// episodeThumb is the picture of an episode in the list: its still (or a
+// frame the server took from it); until there is one, the series backdrop,
+// which is as wide; else the series poster whole, not cropped to a strip.
+function episodeThumb(e, show, ...children) {
+  const [picture, fit] =
+    e.thumb ? [`url("/api/image/${e.id}/thumb?v=${e.thumb}")`, ""] :
+    show.backdrop ? [image(show.id, "backdrop"), ""] :
+    show.poster ? [image(show.id, "poster"), " whole"] : ["", ""];
+  return h("div", { class: "thumb" + fit, style: picture && `background-image:${picture}` }, children);
+}
+
+// scrollingTabs keeps a row of tabs that is wider than the screen usable:
+// the open tab is scrolled into view, and a side with more tabs behind it
+// fades out.
+function scrollingTabs(row) {
+  const update = () => {
+    row.classList.toggle("more-left", row.scrollLeft > 1);
+    row.classList.toggle("more-right", row.scrollLeft + row.clientWidth < row.scrollWidth - 1);
+  };
+  requestAnimationFrame(() => {
+    const active = row.querySelector(".active");
+    if (active && row.scrollWidth > row.clientWidth) // not scrollIntoView: that would scroll the page too
+      row.scrollLeft = active.offsetLeft - (row.clientWidth - active.offsetWidth) / 2;
+    update();
+  });
+  row.addEventListener("scroll", update, { passive: true });
+  // A mouse wheel scrolls the row sideways, until it reaches an end.
+  row.addEventListener("wheel", e => {
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; // a trackpad already scrolls sideways
+    const room = e.deltaY > 0 ? row.scrollWidth - row.clientWidth - row.scrollLeft : row.scrollLeft;
+    if (room <= 0) return;
+    e.preventDefault();
+    row.scrollLeft += e.deltaY;
+  }, { passive: false });
+  new ResizeObserver(update).observe(row);
+  return row;
+}
+
 function renderShow(id) {
   const show = library.shows.map(asShow).find(x => x.id === id);
   if (!show) return shell("shows", h("div", { class: "empty" }, "This show is not in the library any more."));
@@ -391,12 +429,12 @@ function renderShow(id) {
     hero(show, h("div", { class: "actions" },
       next && h("button", { class: "primary", onclick: () => play(next, undefined, episodes) }, icon("play"), `${playLabel(next)} · ${label(next)}`),
     )),
-    h("div", { class: "tabs" }, show.seasons.map(s => h("button", {
+    scrollingTabs(h("div", { class: "tabs" }, show.seasons.map(s => h("button", {
       class: s === current ? "active" : "",
       onclick: () => { openSeason[id] = s.number; renderShow(id); },
-    }, s.number ? `Season ${s.number}` : "Specials"))),
+    }, s.number ? `Season ${s.number}` : "Specials")))),
     current.episodes.map(e => h("div", { class: "episode", onclick: () => play(e, undefined, episodes) },
-      h("div", { class: "thumb", style: `background-image:${image(e.id, "poster")}` },
+      episodeThumb(e, show,
         e.played && h("span", { class: "seen", title: "Watched" }, "✓"), progressBar(e)),
       h("div", { class: "body" },
         h("div", { class: "name" }, `${e.episode}${e.episodeEnd > e.episode ? "–" + e.episodeEnd : ""}. ${e.title}`),

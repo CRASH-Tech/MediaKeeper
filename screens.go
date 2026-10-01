@@ -15,11 +15,14 @@ import (
 	"time"
 )
 
-// Screenshots of movies, shown on their pages. They are taken in the
-// background by ffmpeg and kept in a hidden folder of the library, where
-// media centers and the library scan do not look:
+// Screenshots of movies, shown on their pages, and a still of every episode
+// that has none of its own (named after the video, -thumb.jpg), so that the
+// list of episodes does not show the series poster cropped. They are taken
+// in the background by ffmpeg and kept in a hidden folder of the library,
+// where media centers and the library scan do not look:
 //
 //	<library>/.cache/screenshots/<movie id>/01.jpg ... 08.jpg
+//	<library>/.cache/stills/<episode id>.jpg
 
 const (
 	screenCount = 8
@@ -28,16 +31,21 @@ const (
 	screenFrom, screenTo = 0.10, 0.90
 	// Between whole passes over the library, for titles added meanwhile.
 	screenRescan = 5 * time.Minute
+	// An episode's still: a third of the way in, past the recap and the
+	// opening titles.
+	stillAt, stillWidth = 0.3, 640
 )
 
 type screenJob struct {
 	id     string
 	jitter bool // take other frames than last time
+	still  bool // an episode's still, not a movie's screenshots
 }
 
 type screenMaker struct {
-	s   *Server
-	dir string
+	s         *Server
+	dir       string
+	stillsDir string
 
 	mu      sync.Mutex
 	urgent  []screenJob     // asked for by someone looking at the page
@@ -48,11 +56,27 @@ type screenMaker struct {
 }
 
 func newScreenMaker(s *Server) *screenMaker {
-	return &screenMaker{s: s, dir: filepath.Join(s.root, ".cache", "screenshots"),
+	return &screenMaker{s: s, dir: filepath.Join(s.root, ".cache", "screenshots"), stillsDir: filepath.Join(s.root, ".cache", "stills"),
 		pending: map[string]bool{}, failed: map[string]bool{}, wake: make(chan struct{}, 1), stop: make(chan struct{})}
 }
 
 func (m *screenMaker) folder(id string) string { return filepath.Join(m.dir, id) }
+
+func (m *screenMaker) stillPath(id string) string { return filepath.Join(m.stillsDir, id+".jpg") }
+
+// episodeStill is the picture of an episode: its own still, or the frame
+// taken from it; "" while there is neither.
+func (s *Server) episodeStill(it *CatItem) string {
+	if it.Thumb != "" {
+		return it.Thumb
+	}
+	if s.screens != nil {
+		if p := s.screens.stillPath(it.ID); exists(p) {
+			return p
+		}
+	}
+	return ""
+}
 
 // shots lists the screenshots of a movie in order.
 func (m *screenMaker) shots(id string) []string {
@@ -69,7 +93,7 @@ func (m *screenMaker) request(id string, jitter bool) {
 	}
 	if !m.pending[id] || jitter {
 		m.pending[id] = true
-		m.urgent = append(m.urgent, screenJob{id, jitter})
+		m.urgent = append(m.urgent, screenJob{id: id, jitter: jitter})
 	}
 	m.mu.Unlock()
 	select {
@@ -115,11 +139,18 @@ func (m *screenMaker) run() {
 			case <-time.After(10 * time.Second):
 			}
 		}
-		err := m.take(job)
+		var err error
+		key := job.id
+		if job.still {
+			key = "still:" + job.id
+			err = m.takeStill(job.id)
+		} else {
+			err = m.take(job)
+		}
 		m.mu.Lock()
-		delete(m.pending, job.id)
+		delete(m.pending, key)
 		if err != nil {
-			m.failed[job.id] = true
+			m.failed[key] = true
 		}
 		m.mu.Unlock()
 		if err != nil {
@@ -141,8 +172,9 @@ func (m *screenMaker) close() {
 	}
 }
 
-// next returns the next job: an urgent one, else a movie without
-// screenshots.
+// next returns the next job: an urgent one, else an episode without a
+// still (one frame, quick, and seen in every list of episodes), else a
+// movie without screenshots.
 func (m *screenMaker) next() (screenJob, bool) {
 	m.mu.Lock()
 	if len(m.urgent) > 0 {
@@ -155,6 +187,18 @@ func (m *screenMaker) next() (screenJob, bool) {
 	cat, err := m.s.lib.Catalog()
 	if err != nil {
 		return screenJob{}, false
+	}
+	for _, show := range cat.Shows {
+		for _, it := range show.Episodes() {
+			key := "still:" + it.ID
+			m.mu.Lock()
+			if it.Thumb == "" && !m.pending[key] && !m.failed[key] && !exists(m.stillPath(it.ID)) {
+				m.pending[key] = true
+				m.mu.Unlock()
+				return screenJob{id: it.ID, still: true}, false
+			}
+			m.mu.Unlock()
+		}
 	}
 	for _, it := range cat.Movies {
 		m.mu.Lock()
@@ -223,8 +267,45 @@ func (m *screenMaker) take(job screenJob) error {
 	return os.Rename(tmp, dst)
 }
 
-// prune removes the screenshots of titles that are not in the library any
-// more (deleted, or renamed: the id follows the file name).
+// takeStill takes the still of an episode.
+func (m *screenMaker) takeStill(id string) error {
+	cat, err := m.s.lib.Catalog()
+	if err != nil {
+		return err
+	}
+	it := cat.items[id]
+	if it == nil || it.Thumb != "" {
+		return nil // gone, or given a still of its own meanwhile
+	}
+	info := m.s.prober.probe(it.Path)
+	duration := info.Duration.Seconds()
+	if duration <= 0 {
+		duration = float64(it.Runtime * 60)
+	}
+	if duration <= 0 {
+		return fmt.Errorf("%s: the length of the video is unknown", it.Rel)
+	}
+	filters := fmt.Sprintf("thumbnail=40,scale='min(%d,iw)':-2", stillWidth)
+	if v := info.stream("video"); v != nil && v.Interlaced() {
+		filters = "bwdif=mode=send_frame," + filters
+	}
+	if err := os.MkdirAll(m.stillsDir, 0o755); err != nil {
+		return err
+	}
+	dst := m.stillPath(id)
+	tmp := dst + ".tmp.jpg" // the page never gets half a file
+	defer os.Remove(tmp)
+	cmd := exec.Command(m.s.ffmpeg, "-nostdin", "-v", "error", "-ss", strconv.FormatFloat(stillAt*duration, 'f', 2, 64),
+		"-i", it.Path, "-map", "0:v:0", "-vf", filters, "-frames:v", "1", "-q:v", "4", "-y", tmp)
+	if msg, err := cmd.CombinedOutput(); err != nil || !exists(tmp) {
+		return fmt.Errorf("still of %s: %v %s", it.Rel, err, lastLine(string(msg)))
+	}
+	return os.Rename(tmp, dst)
+}
+
+// prune removes the screenshots and stills of titles that are not in the
+// library any more (deleted, or renamed: the id follows the file name), and
+// the stills of episodes that got one of their own.
 func (m *screenMaker) prune() {
 	cat, err := m.s.lib.Catalog()
 	if err != nil {
@@ -234,6 +315,12 @@ func (m *screenMaker) prune() {
 	for _, e := range entries {
 		if cat.items[e.Name()] == nil {
 			os.RemoveAll(filepath.Join(m.dir, e.Name()))
+		}
+	}
+	stills, _ := os.ReadDir(m.stillsDir)
+	for _, e := range stills {
+		if it := cat.items[strings.TrimSuffix(e.Name(), ".jpg")]; it == nil || it.Thumb != "" {
+			os.Remove(filepath.Join(m.stillsDir, e.Name()))
 		}
 	}
 }
