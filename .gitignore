@@ -8,3 +8,9 @@
 
 # Undo journals of runs inside the working tree
 .mediakeeper/
+
+# Settings, API keys and accounts kept next to the program
+/config.yaml
+/config.json
+/config.json.old
+/server.json

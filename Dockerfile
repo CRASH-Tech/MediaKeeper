@@ -18,8 +18,10 @@ FROM alpine:3
 RUN apk add --no-cache aria2 ca-certificates ffmpeg mkvtoolnix tzdata
 COPY --from=build /mediakeeper /usr/local/bin/mediakeeper
 
-# Settings (API keys) live in /config, the library in /media.
-ENV XDG_CONFIG_HOME=/config
+# Settings (API keys) live in /config, the library in /media. The program's
+# own folder is not writable here, so the settings file is named outright,
+# where earlier versions of the image kept it.
+ENV XDG_CONFIG_HOME=/config MEDIAKEEPER_CONFIG=/config/mediakeeper/config.yaml
 VOLUME ["/config", "/media"]
 EXPOSE 8200/tcp 1900/udp
 

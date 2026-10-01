@@ -447,7 +447,7 @@ func (d *Downloads) newApp(dl *Download, out *bytes.Buffer) (*App, error) {
 		return nil, err
 	}
 	ui := NewUI(strings.NewReader(""), out)
-	a := &App{ui: ui, root: dl.dir, out: d.s.root, outSet: true, yes: true, noTags: d.s.noTags, noJournal: true}
+	a := &App{ui: ui, root: dl.dir, out: d.s.root, outSet: true, outRoots: d.s.roots, yes: true, noTags: d.s.noTags, noJournal: true}
 	// A new hub every time: a source that was unreachable an hour ago gets
 	// another chance.
 	a.hub = NewHub(providers, func(name, reason string) { ui.Printf("(source %s is off: %s)\n", name, reason) })

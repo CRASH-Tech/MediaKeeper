@@ -124,6 +124,16 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	case "hls":
 		s.hls.api(w, r, u, parts[1:])
 		return
+	case "meta":
+		if !u.Admin {
+			apiError(w, http.StatusForbidden, errors.New("only an administrator can edit descriptions"))
+			return
+		}
+		s.metaAPI(w, r, arg(1), arg(2))
+		return
+	case "screens":
+		s.screens.api(w, r, u, arg(1), strings.Join(parts[min(2, len(parts)):], "/"))
+		return
 	case "users":
 		if !u.Admin {
 			apiError(w, http.StatusForbidden, errors.New("only an administrator can manage users"))
@@ -247,6 +257,9 @@ func (s *Server) itemJSON(it *CatItem, u *User, details bool) map[string]any {
 	}
 	m["plot"], m["originalTitle"], m["tagline"], m["date"] = it.Plot, it.OriginalTitle, it.Tagline, it.Date
 	m["imdb"], m["size"], m["file"] = it.IMDb, it.Size, it.Rel
+	if len(s.roots) > 1 { // which of the library folders
+		m["file"] = filepath.Join(filepath.Base(it.Root), it.Rel)
+	}
 	info := s.lib.Probe(it)
 	var audio []map[string]any
 	for _, st := range info.Streams {
@@ -263,7 +276,7 @@ func (s *Server) itemJSON(it *CatItem, u *User, details bool) map[string]any {
 	// take the file as it is; unknown is left for the browser to try.
 	if v, a := info.stream("video"), info.stream("audio"); v != nil {
 		m["direct"] = browserContainers[strings.ToLower(filepath.Ext(it.Path))] && browserVideo[v.Codec] &&
-			!strings.Contains(v.Profile, "10") && (a == nil || browserAudio[a.Codec])
+			!strings.Contains(v.Profile, "10") && !v.Interlaced() && (a == nil || browserAudio[a.Codec])
 	}
 	return m
 }
@@ -294,7 +307,7 @@ func (s *Server) libraryJSON(cat *Catalog, u *User) map[string]any {
 				e["plot"], e["date"] = ep.Plot, ep.Date
 				episodes = append(episodes, e)
 			}
-			seasons = append(seasons, map[string]any{"id": season.ID, "number": season.Number, "episodes": episodes})
+			seasons = append(seasons, map[string]any{"id": season.ID, "number": season.Number, "poster": season.Poster != "", "episodes": episodes})
 		}
 		shows = append(shows, map[string]any{
 			"id": show.ID, "title": show.Title, "localTitle": show.LocalTitle, "year": show.Year, "plot": show.Plot,

@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -26,12 +27,14 @@ var webFiles embed.FS
 // API, the Jellyfin-compatible API for native clients, and (unless switched
 // off) the DLNA media server.
 type Server struct {
-	root, name string
-	port       int
-	cfg        Config
-	noTags     bool
-	guests     bool // the web interface can be watched without signing in
-	log        func(format string, args ...any)
+	roots  []Root // the folders of the library
+	root   string // the first of them, which also holds the downloads and the cache
+	name   string
+	port   int
+	cfg    Config
+	noTags bool
+	guests bool // the web interface can be watched without signing in
+	log    func(format string, args ...any)
 
 	prober *prober
 	lib    *Library
@@ -42,6 +45,7 @@ type Server struct {
 
 	transcodes chan struct{} // limits simultaneous ffmpeg processes
 	hls        *hlsManager
+	screens    *screenMaker
 	organizing sync.Mutex // one change of the library at a time
 
 	loginMu  sync.Mutex
@@ -50,12 +54,13 @@ type Server struct {
 
 // ServerOptions are the command-line choices for -serve.
 type ServerOptions struct {
-	Root, Name string
-	Port       int
-	DLNA       bool
-	Guests     bool
-	NoTags     bool
-	Config     Config
+	Roots  []Root
+	Name   string
+	Port   int
+	DLNA   bool
+	Guests bool
+	NoTags bool
+	Config Config
 }
 
 func NewServer(o ServerOptions, log func(string, ...any)) (*Server, error) {
@@ -63,21 +68,33 @@ func NewServer(o ServerOptions, log func(string, ...any)) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{root: o.Root, name: o.Name, port: o.Port, cfg: o.Config, noTags: o.NoTags, guests: o.Guests, log: log,
+	if len(o.Roots) == 0 {
+		return nil, errors.New("no library folders")
+	}
+	s := &Server{roots: o.Roots, root: o.Roots[0].Path, name: o.Name, port: o.Port, cfg: o.Config, noTags: o.NoTags, guests: o.Guests, log: log,
 		prober: newProber(), auth: auth, transcodes: make(chan struct{}, 2), failures: map[string][]time.Time{}}
 	s.ffmpeg, _ = exec.LookPath("ffmpeg")
-	s.lib = NewLibrary(o.Root, s.prober)
+	s.lib = NewLibrary(o.Roots, s.prober)
 	if _, err := s.lib.Catalog(); err != nil {
 		return nil, err
 	}
 	if o.DLNA {
-		if s.dlna, err = newDLNAServer(o.Root, o.Name, o.Port, log, s.prober); err != nil {
+		if s.dlna, err = newDLNAServer(o.Roots, o.Name, o.Port, log, s.prober); err != nil {
 			return nil, err
 		}
 	}
 	s.dl = NewDownloads(s)
 	s.hls = newHLSManager(s)
+	s.screens = newScreenMaker(s)
 	return s, nil
+}
+
+// rootFor is the library folder a file lies in.
+func (s *Server) rootFor(path string) Root {
+	if r, ok := rootOf(s.roots, path); ok {
+		return r
+	}
+	return s.roots[0]
 }
 
 // refresh makes the catalogue and the DLNA tree show a change at once.
@@ -109,8 +126,13 @@ func (s *Server) Handler() http.Handler {
 		case strings.HasPrefix(p, "/api/"):
 			s.api(w, r)
 			return
-		case p == "/favicon.ico":
-			w.WriteHeader(http.StatusNoContent)
+		case p == "/favicon.ico" || strings.HasPrefix(p, "/apple-touch-icon"):
+			// Browsers ask for these by themselves, whatever the page says:
+			// the iPhone for its home screen and bookmarks.
+			w.Header().Set("Cache-Control", "max-age=86400")
+			r2 := *r
+			r2.URL = &url.URL{Path: "/static/apple-touch-icon.png"}
+			files.ServeHTTP(w, &r2)
 			return
 		}
 		if dlna != nil {
@@ -307,8 +329,16 @@ func Serve(ui *UI, o ServerOptions) error {
 	for _, show := range cat.Shows {
 		episodes += len(show.Episodes())
 	}
-	ui.Printf("MediaKeeper server %s: %d movie(s), %d series, %d episode(s) from %s\n",
-		ui.Bold(`"`+o.Name+`"`), len(cat.Movies), len(cat.Shows), episodes, o.Root)
+	if len(o.Roots) == 1 {
+		ui.Printf("MediaKeeper server %s: %d movie(s), %d series, %d episode(s) from %s\n",
+			ui.Bold(`"`+o.Name+`"`), len(cat.Movies), len(cat.Shows), episodes, o.Roots[0])
+	} else {
+		ui.Printf("MediaKeeper server %s: %d movie(s), %d series, %d episode(s) from\n",
+			ui.Bold(`"`+o.Name+`"`), len(cat.Movies), len(cat.Shows), episodes)
+		for _, r := range o.Roots {
+			ui.Printf("  %s\n", r)
+		}
+	}
 	ifaces := localInterfaces()
 	for _, i := range ifaces {
 		ui.Printf("  http://%s:%d/  (%s)\n", i.ip, o.Port, i.ifi.Name)
@@ -344,6 +374,7 @@ func Serve(ui *UI, o ServerOptions) error {
 		}
 	}()
 
+	go s.screens.run()
 	server := &http.Server{Handler: s.Handler()}
 	failed := make(chan error, 1)
 	go func() { failed <- server.Serve(listener) }()
@@ -357,6 +388,7 @@ func Serve(ui *UI, o ServerOptions) error {
 	}
 	s.dl.Close()
 	s.hls.stopAll()
+	s.screens.close()
 	s.auth.Save()
 	shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

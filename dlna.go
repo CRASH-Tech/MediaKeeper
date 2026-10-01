@@ -43,10 +43,11 @@ var dlnaMime = map[string]string{
 // players on the local network find it by themselves (SSDP), browse it
 // (ContentDirectory over SOAP) and play the files over HTTP.
 type DLNAServer struct {
-	root, name, uuid string
-	port             int
-	log              func(format string, args ...any)
-	prober           *prober
+	roots      []Root
+	name, uuid string
+	port       int
+	log        func(format string, args ...any)
+	prober     *prober
 
 	mu       sync.Mutex
 	lib      *dlnaLibrary
@@ -55,13 +56,13 @@ type DLNAServer struct {
 }
 
 func NewDLNAServer(root, name string, port int, log func(string, ...any)) (*DLNAServer, error) {
-	return newDLNAServer(root, name, port, log, newProber())
+	return newDLNAServer([]Root{{Path: root}}, name, port, log, newProber())
 }
 
-func newDLNAServer(root, name string, port int, log func(string, ...any), p *prober) (*DLNAServer, error) {
+func newDLNAServer(roots []Root, name string, port int, log func(string, ...any), p *prober) (*DLNAServer, error) {
 	host, _ := os.Hostname()
-	sum := sha1.Sum([]byte("mediakeeper|" + host + "|" + root))
-	s := &DLNAServer{root: root, name: name, port: port, log: log, prober: p, updateID: 1,
+	sum := sha1.Sum([]byte("mediakeeper|" + host + "|" + roots[0].Path))
+	s := &DLNAServer{roots: roots, name: name, port: port, log: log, prober: p, updateID: 1,
 		// Stable across restarts, so that clients recognize the server.
 		uuid: fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])}
 	if _, err := s.library(); err != nil {
@@ -78,7 +79,7 @@ func (s *DLNAServer) library() (*dlnaLibrary, error) {
 	if s.lib != nil && time.Since(s.scanned) < dlnaRescanAfter {
 		return s.lib, nil
 	}
-	lib, err := buildLibrary(s.root)
+	lib, err := buildLibrary(s.roots)
 	if err != nil {
 		if s.lib != nil {
 			return s.lib, nil // keep serving what is known

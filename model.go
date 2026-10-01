@@ -44,7 +44,9 @@ type LocalTitle struct {
 }
 
 type Person struct {
-	Name, Role, Thumb string
+	Name  string `json:"name"`
+	Role  string `json:"role,omitempty"`
+	Thumb string `json:"thumb,omitempty"`
 }
 
 // Movie, Show, Season and Episode are provider-neutral: every source

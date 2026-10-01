@@ -31,9 +31,22 @@ type streamInfo struct {
 	SampleRate    int
 	FrameRate     float64
 	PixelFormat   string
+	FieldOrder    string  // "progressive", or tt/bb/tb/bt for interlaced video
+	FieldRate     float64 // r_frame_rate: for interlaced video usually the rate of fields
 	AspectRatio   string
 	TimeBase      string
 	ChannelLayout string
+}
+
+// Interlaced reports video made of alternating fields (broadcast, DVD, some
+// Blu-rays). Apple devices do not show such H.264 at all, and browsers show
+// it combed and jerky, so it is always converted, never copied.
+func (s *streamInfo) Interlaced() bool {
+	switch s.FieldOrder {
+	case "tt", "bb", "tb", "bt":
+		return true
+	}
+	return false
 }
 
 // ratio reads ffprobe's "24000/1001".
@@ -141,7 +154,7 @@ func (p *prober) probe(path string) probeInfo {
 	var info probeInfo
 	out, err := exec.Command(p.tool, "-v", "error", "-show_entries",
 		"format=duration,bit_rate:stream=index,codec_type,codec_name,profile,level,width,height,channels,channel_layout,sample_rate,bit_rate,"+
-			"pix_fmt,avg_frame_rate,display_aspect_ratio,bits_per_raw_sample,refs,time_base:stream_tags=language,title:stream_disposition=default",
+			"pix_fmt,avg_frame_rate,r_frame_rate,field_order,display_aspect_ratio,bits_per_raw_sample,refs,time_base:stream_tags=language,title:stream_disposition=default",
 		"-of", "json", path).Output()
 	if err != nil {
 		return info
@@ -162,6 +175,8 @@ func (p *prober) probe(path string) probeInfo {
 			BitRate  string `json:"bit_rate"`
 			PixFmt   string `json:"pix_fmt"`
 			FPS      string `json:"avg_frame_rate"`
+			RFPS     string `json:"r_frame_rate"`
+			Fields   string `json:"field_order"`
 			Aspect   string `json:"display_aspect_ratio"`
 			Depth    string `json:"bits_per_raw_sample"`
 			TimeBase string `json:"time_base"`
@@ -196,7 +211,7 @@ func (p *prober) probe(path string) probeInfo {
 			Language: s.Tags.Language, Title: s.Tags.Title, Width: s.Width, Height: s.Height,
 			Channels: s.Channels, Default: s.Disposition.Default == 1,
 			Level: s.Level, Refs: s.Refs, ChannelLayout: s.Layout, SampleRate: atoi(s.Rate), BitRate: atoi(s.BitRate),
-			PixelFormat: s.PixFmt, FrameRate: ratio(s.FPS), AspectRatio: s.Aspect, BitDepth: atoi(s.Depth), TimeBase: s.TimeBase})
+			PixelFormat: s.PixFmt, FrameRate: ratio(s.FPS), FieldOrder: s.Fields, FieldRate: ratio(s.RFPS), AspectRatio: s.Aspect, BitDepth: atoi(s.Depth), TimeBase: s.TimeBase})
 	}
 	if v := info.stream("video"); v != nil {
 		info.Width, info.Height = v.Width, v.Height

@@ -125,20 +125,17 @@ func nodeID(prefix, rel string) string {
 	return prefix + hex.EncodeToString(sum[:8])
 }
 
-// buildLibrary scans root and arranges the videos into
+// buildLibrary scans the library folders and arranges the videos into
 //
 //	Movies/                    every movie, by title
 //	Series/Show/Season N/      episodes in order
-//	Folders/                   the directory as it is on disk
+//	Folders/                   the directory as it is on disk (one folder
+//	                           per library folder, when there are several)
 //
 // Titles, plots and artwork come from the .nfo and image files next to the
 // videos; a video without them is shown under the name guessed from its
 // file name.
-func buildLibrary(root string) (*dlnaLibrary, error) {
-	files, err := Scan(root)
-	if err != nil {
-		return nil, err
-	}
+func buildLibrary(roots []Root) (*dlnaLibrary, error) {
 	lib := &dlnaLibrary{nodes: map[string]*dlnaNode{}}
 	add := func(parent *dlnaNode, n *dlnaNode) *dlnaNode {
 		if have := lib.nodes[n.ID]; have != nil {
@@ -160,124 +157,141 @@ func buildLibrary(root string) (*dlnaLibrary, error) {
 	seasons := map[*dlnaNode]int{}
 	var sig strings.Builder
 
-	for _, f := range files {
-		st, err := os.Stat(f.Path)
+	names := map[string]int{} // folder names already used under Folders
+	for i, r := range roots {
+		root, key := r.Path, rootKey(roots, i)
+		files, err := scanRoot(r)
 		if err != nil {
-			continue
+			return nil, err
 		}
-		fmt.Fprintf(&sig, "%s|%d|%d\n", f.Rel, st.Size(), st.ModTime().UnixNano())
-		dir := filepath.Dir(f.Path)
-		stem := strings.TrimSuffix(filepath.Base(f.Path), filepath.Ext(f.Path))
-		video := dlnaNode{Path: f.Path, Size: st.Size(), ModTime: st.ModTime()}
-		for _, sc := range f.Sidecars {
-			if ext := strings.ToLower(filepath.Ext(sc)); ext == ".srt" {
-				video.Subs = append(video.Subs, sc)
+		diskFolder := folders
+		if len(roots) > 1 { // the files of each library folder under its name
+			name := filepath.Base(root)
+			if names[name]++; names[name] > 1 {
+				name = fmt.Sprintf("%s (%d)", name, names[name])
 			}
+			diskFolder = add(folders, &dlnaNode{ID: nodeID("r-", root), Title: name})
 		}
-
-		info := readNFO(filepath.Join(dir, stem+".nfo"))
-		isEpisode := f.Guess.IsSeries
-		if info != nil {
-			isEpisode = info.XMLName.Local == "episodedetails"
-			video.Plot, video.Genres, video.Runtime = info.Plot, info.Genres, info.Runtime
-			video.Date = info.Premiered + info.Aired
-		}
-
-		// Folders: the file under its real name, in its real place.
-		parent := folders
-		if rel := filepath.Dir(f.Rel); rel != "." {
-			path := ""
-			for _, part := range strings.Split(rel, string(filepath.Separator)) {
-				path = filepath.Join(path, part)
-				parent = add(parent, &dlnaNode{ID: nodeID("d-", path), Title: part})
+		for _, f := range files {
+			st, err := os.Stat(f.Path)
+			if err != nil {
+				continue
 			}
-		}
-		plain := video
-		plain.ID, plain.Title = nodeID("f-", f.Rel), filepath.Base(f.Path)
-		if thumb := filepath.Join(dir, stem+"-thumb.jpg"); exists(thumb) {
-			plain.Art = thumb
-		} else if poster := filepath.Join(dir, "poster.jpg"); dir != root && exists(poster) {
-			plain.Art = poster
-		}
-		add(parent, &plain)
+			fmt.Fprintf(&sig, "%s|%d|%d\n", f.Rel, st.Size(), st.ModTime().UnixNano())
+			dir := filepath.Dir(f.Path)
+			stem := strings.TrimSuffix(filepath.Base(f.Path), filepath.Ext(f.Path))
+			video := dlnaNode{Path: f.Path, Size: st.Size(), ModTime: st.ModTime()}
+			for _, sc := range f.Sidecars {
+				if ext := strings.ToLower(filepath.Ext(sc)); ext == ".srt" {
+					video.Subs = append(video.Subs, sc)
+				}
+			}
 
-		if !isEpisode {
-			lib.movies++
-			movie := video
-			movie.ID, movie.Title, movie.Art = nodeID("m-", f.Rel), withYear(f.Guess.Title, f.Guess.Year), plain.Art
+			info := readNFO(filepath.Join(dir, stem+".nfo"))
+			isEpisode := f.Guess.IsSeries
+			if info != nil {
+				isEpisode = info.XMLName.Local == "episodedetails"
+				video.Plot, video.Genres, video.Runtime = info.Plot, info.Genres, info.Runtime
+				video.Date = info.Premiered + info.Aired
+			}
+
+			// Folders: the file under its real name, in its real place.
+			parent := diskFolder
+			if rel := filepath.Dir(f.Rel); rel != "." {
+				path := ""
+				for _, part := range strings.Split(rel, string(filepath.Separator)) {
+					path = filepath.Join(path, part)
+					parent = add(parent, &dlnaNode{ID: nodeID("d-", key+path), Title: part})
+				}
+			}
+			plain := video
+			plain.ID, plain.Title = nodeID("f-", key+f.Rel), filepath.Base(f.Path)
+			if thumb := filepath.Join(dir, stem+"-thumb.jpg"); exists(thumb) {
+				plain.Art = thumb
+			} else if poster := filepath.Join(dir, "poster.jpg"); dir != root && exists(poster) {
+				plain.Art = poster
+			}
+			add(parent, &plain)
+
+			if !isEpisode {
+				lib.movies++
+				movie := video
+				movie.ID, movie.Title, movie.Art = nodeID("m-", key+f.Rel), withYear(f.Guess.Title, f.Guess.Year), plain.Art
+				if info != nil && info.Title != "" {
+					movie.Title = withLocal(info.Title, info.Localized)
+					if info.Year > 0 {
+						movie.Title += fmt.Sprintf(" (%d)", info.Year)
+					}
+				}
+				if movie.Title == "" {
+					movie.Title = stem
+				}
+				add(movies, &movie)
+				continue
+			}
+
+			lib.episodes++
+			// The series folder is the one with tvshow.nfo; without it the
+			// series is known only by the title guessed from the file name.
+			showTitle, showKey, showDir := f.Guess.Title, "guess:"+norm(f.Guess.Title), ""
+			if info != nil && info.ShowTitle != "" {
+				showTitle, showKey = info.ShowTitle, "title:"+norm(info.ShowTitle)
+			}
+			for d := dir; ; d = filepath.Dir(d) {
+				if show := readNFO(filepath.Join(d, "tvshow.nfo")); show != nil && show.XMLName.Local == "tvshow" {
+					showDir, showKey = d, "dir:"+d
+					if show.Title != "" {
+						showTitle = withLocal(show.Title, show.Localized)
+					}
+					break
+				}
+				if d == root || d == filepath.Dir(d) {
+					break
+				}
+			}
+			if showTitle == "" {
+				showTitle = "Unknown series"
+			}
+			showKey = key + showKey
+			show := add(series, &dlnaNode{ID: nodeID("s-", showKey), Title: showTitle})
+			if showDir != "" && show.Art == "" && exists(filepath.Join(showDir, "poster.jpg")) {
+				show.Art = filepath.Join(showDir, "poster.jpg")
+			}
+
+			seasonNo, episodeNo, last := f.Guess.Season, 0, 0
+			if len(f.Guess.Episodes) > 0 {
+				episodeNo, last = f.Guess.Episodes[0], f.Guess.Episodes[len(f.Guess.Episodes)-1]
+			}
+			if info != nil && info.XMLName.Local == "episodedetails" && info.Episode > 0 {
+				seasonNo, episodeNo = info.Season, info.Episode
+				last = max(last, episodeNo)
+			}
+			seasonTitle := fmt.Sprintf("Season %d", seasonNo)
+			if seasonNo == 0 {
+				seasonTitle = "Specials"
+			}
+			season := add(show, &dlnaNode{ID: nodeID("n-", fmt.Sprintf("%s/%d", showKey, seasonNo)), Title: seasonTitle, Art: show.Art})
+			seasons[season] = seasonNo
+			if poster := filepath.Join(showDir, fmt.Sprintf("season%02d-poster.jpg", seasonNo)); showDir != "" && exists(poster) {
+				season.Art = poster
+			}
+
+			ep := video
+			ep.ID = nodeID("e-", key+f.Rel)
+			ep.Title = fmt.Sprintf("%02d", episodeNo)
+			if last > episodeNo {
+				ep.Title += fmt.Sprintf("-%02d", last)
+			}
 			if info != nil && info.Title != "" {
-				movie.Title = withLocal(info.Title, info.Localized)
-				if info.Year > 0 {
-					movie.Title += fmt.Sprintf(" (%d)", info.Year)
-				}
+				ep.Title += ". " + info.Title
+			} else {
+				ep.Title = "Episode " + ep.Title
 			}
-			if movie.Title == "" {
-				movie.Title = stem
+			if ep.Art = plain.Art; ep.Art == "" {
+				ep.Art = season.Art
 			}
-			add(movies, &movie)
-			continue
+			order[add(season, &ep)] = episodeKey{seasonNo, episodeNo}
 		}
-
-		lib.episodes++
-		// The series folder is the one with tvshow.nfo; without it the
-		// series is known only by the title guessed from the file name.
-		showTitle, showKey, showDir := f.Guess.Title, "guess:"+norm(f.Guess.Title), ""
-		if info != nil && info.ShowTitle != "" {
-			showTitle, showKey = info.ShowTitle, "title:"+norm(info.ShowTitle)
-		}
-		for d := dir; ; d = filepath.Dir(d) {
-			if show := readNFO(filepath.Join(d, "tvshow.nfo")); show != nil && show.XMLName.Local == "tvshow" {
-				showDir, showKey = d, "dir:"+d
-				if show.Title != "" {
-					showTitle = withLocal(show.Title, show.Localized)
-				}
-				break
-			}
-			if d == root || d == filepath.Dir(d) {
-				break
-			}
-		}
-		if showTitle == "" {
-			showTitle = "Unknown series"
-		}
-		show := add(series, &dlnaNode{ID: nodeID("s-", showKey), Title: showTitle})
-		if showDir != "" && show.Art == "" && exists(filepath.Join(showDir, "poster.jpg")) {
-			show.Art = filepath.Join(showDir, "poster.jpg")
-		}
-
-		seasonNo, episodeNo, last := f.Guess.Season, 0, 0
-		if len(f.Guess.Episodes) > 0 {
-			episodeNo, last = f.Guess.Episodes[0], f.Guess.Episodes[len(f.Guess.Episodes)-1]
-		}
-		if info != nil && info.XMLName.Local == "episodedetails" && info.Episode > 0 {
-			seasonNo, episodeNo = info.Season, info.Episode
-			last = max(last, episodeNo)
-		}
-		seasonTitle := fmt.Sprintf("Season %d", seasonNo)
-		if seasonNo == 0 {
-			seasonTitle = "Specials"
-		}
-		season := add(show, &dlnaNode{ID: nodeID("n-", fmt.Sprintf("%s/%d", showKey, seasonNo)), Title: seasonTitle, Art: show.Art})
-		seasons[season] = seasonNo
-		if poster := filepath.Join(showDir, fmt.Sprintf("season%02d-poster.jpg", seasonNo)); showDir != "" && exists(poster) {
-			season.Art = poster
-		}
-
-		ep := video
-		ep.ID = nodeID("e-", f.Rel)
-		ep.Title = fmt.Sprintf("%02d", episodeNo)
-		if last > episodeNo {
-			ep.Title += fmt.Sprintf("-%02d", last)
-		}
-		if info != nil && info.Title != "" {
-			ep.Title += ". " + info.Title
-		} else {
-			ep.Title = "Episode " + ep.Title
-		}
-		if ep.Art = plain.Art; ep.Art == "" {
-			ep.Art = season.Art
-		}
-		order[add(season, &ep)] = episodeKey{seasonNo, episodeNo}
 	}
 
 	sort.SliceStable(movies.Children, func(a, b int) bool {

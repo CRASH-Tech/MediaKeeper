@@ -7,7 +7,8 @@ Jellyfin apps, and DLNA for TVs.
 
 - Finds each title in online catalogues and renames files and folders the way
   Jellyfin, Kodi and Plex expect.
-- Sorts movies into `Movies/` and episodes into `Shows/<Series>/Season NN/`.
+- Sorts movies into `Movies/` and episodes into `Shows/<Series>/Season NN/`,
+  or keeps a library spread over several folders of movies and of series.
 - Writes `.nfo` files, downloads posters and backdrops, and writes tags into
   the files themselves.
 - Asks when a file name is not enough: pick from a list, type another title,
@@ -38,7 +39,7 @@ media/                                      media/
 ## Contents
 
 - [Install](#install)
-- [Organizing a library](#organizing-a-library)
+- [Organizing a library](#organizing-a-library): [several folders](#several-folders)
 - [Sources and API keys](#sources-and-api-keys)
 - [Media server](#media-server): [users](#users), [web interface](#web-interface), [downloads](#downloads), [Jellyfin apps](#jellyfin-apps), [DLNA](#dlna)
 - [Docker](#docker)
@@ -127,6 +128,36 @@ Good to know:
   Tags written into files cannot be undone — use `-no-tags` while
   experimenting.
 
+### Several folders
+
+A library can be spread over several folders — disks, shares — each holding
+movies only, series only, or both:
+
+```sh
+mediakeeper /srv/media                                     # both: Movies/ and Shows/ inside
+mediakeeper -movies /srv/movies -movies /mnt/disk2/films   # movies only
+mediakeeper -movies /srv/movies -shows /srv/series /srv/media
+```
+
+The same folders can be written once in the [settings file](#settings-file)
+under `libraries:`; they are used whenever no folder is given on the command
+line, and a folder given by its path alone keeps the kind written there.
+
+- A folder of **movies** gets `Title (Year)/` right inside, a folder of
+  **series** `Series (Year)/Season NN/`; neither gets `Movies/` or `Shows/`.
+  In a folder of movies, a name that looks like an episode is still a movie.
+- **Titles never move between folders.** Each folder is organized on its
+  own, with its own undo journal: `-undo` with the same folders reverts the
+  last run in each of them.
+- The server shows all folders together. New downloads go to the first
+  folder of their kind (or the first holding both).
+- **The first folder is special:** the downloads in progress and the
+  screenshots are kept in it, and its titles keep the identifiers — and the
+  watch progress — they had when it was the only one. Add new folders after
+  it. On the command line the folders given by their paths come first, then
+  `-movies` and `-shows`, so `-serve /media -movies /mnt/disk2` keeps
+  `/media` first.
+
 ## Sources and API keys
 
 | Source       | Key  | Movies | Series | Language      | Notes                                        |
@@ -165,7 +196,12 @@ server organizes.
 ```sh
 mediakeeper -serve /path/to/media
 mediakeeper -serve -port 8200 -name "Living room" /path/to/media
+mediakeeper -serve /path/to/media -movies /mnt/disk2/films -shows /mnt/disk2/series
 ```
+
+With [several folders](#several-folders) the catalogue, the Jellyfin apps and
+DLNA show them all together; without a folder on the command line the
+server uses the `libraries` of the settings file.
 
 One port serves three things:
 
@@ -222,11 +258,49 @@ get a plain stream. Converted video is sought with the slider under the
 picture. Progress is remembered per user, and a series continues with the
 next episode.
 
-An administrator can correct a title that was identified wrongly: the small
-**✎ Edit** button in the corner of its page offers the candidates from all sources, a search by
-another title and an IMDb number or link. The files are renamed and moved as
-for a new title and the description and artwork are replaced; the change can
-be reverted with `mediakeeper -undo`.
+A movie's page shows eight screenshots, taken by `ffmpeg` in the
+background between 10% and 90% of the film (so not the logos or the
+credits), each the most characteristic of the frames around its moment.
+They are kept in the hidden folder `.cache/screenshots` of the library,
+which media centers ignore; background work pauses while somebody watches
+a converted video.
+
+An administrator edits a movie with the small **✎ Edit** button in the
+corner of its page:
+
+- **Description** — title, original and Russian titles, year, release date,
+  age rating, rating, tagline, plot, genres, directors, writers, studios,
+  countries and cast. Only these elements of the `.nfo` are replaced;
+  everything else in it stays. The title, date, plot and genres are also
+  written into the tags of the video file (in the background: an AVI or MP4
+  is remuxed, which takes a while). **Fill in from a catalogue…** searches
+  all sources (or takes an IMDb number or a link); the chosen entry fills
+  in the fields, which can still be changed before saving. Saving then also
+  records the catalogue numbers, can take its poster and backdrop, and —
+  with **Rename the files after the title and year** — files the movie
+  under its new name (revertible with `mediakeeper -undo`).
+- **Images** — a new poster or backdrop (JPEG or PNG). The poster is also
+  embedded into MKV and MP4 files as their cover.
+
+The **Images** tab also has **Regenerate screenshots**: new frames from
+other moments, when the first ones came out badly.
+
+A series is edited the same way:
+
+- **Description** — title, original and Russian titles, year, first aired
+  date, status, age rating, rating, plot, genres, studios and cast, written
+  into `tvshow.nfo`. A new title, genres or catalogue numbers also go into
+  the tags of every episode's file. **Fill in from a catalogue…** fills in
+  the fields from the chosen entry; with **Rename the files, and take the
+  titles, descriptions and stills of the episodes** the series is filed
+  anew: the folder and every episode are renamed, the episodes get their
+  descriptions from the catalogue (revertible with `mediakeeper -undo`).
+  Episodes lying among other files, with no folder of their own, can only
+  be described this way: filing them puts them into one.
+- **Images** — the poster, the backdrop, and a poster for each season.
+- **Episodes** — the title, date and plot of each episode, season by
+  season, and a new still. Each episode is saved on its own, into its
+  `.nfo` and the tags of its file.
 
 ### Downloads
 
@@ -242,12 +316,14 @@ MediaKeeper starts and drives it, nothing has to be configured. Nothing is
 seeded after the download completes.
 
 A finished download is identified the same way as on the command line and
-moved into `Movies/` or `Shows/` with its `.nfo` and artwork. When the
+moved into the library with its `.nfo` and artwork: into the first folder of
+movies or of series, or into `Movies/` or `Shows/` of the first folder that
+holds both. When the
 program is not sure, the download is marked **Needs you**: the page shows the
 candidates from all sources, lets you search by another title or paste an
 IMDb number or a link, say that a series file is a single episode or the
 whole series, or delete the files. Downloads are kept in the hidden folder
-`.incoming` inside the library until they are filed.
+`.incoming` inside the (first) library folder until they are filed.
 
 ### Jellyfin apps
 
@@ -302,6 +378,23 @@ server by multicast, which does not pass through Docker's bridge network
 (this works on Linux; Docker Desktop on macOS and Windows cannot do it).
 Without DLNA (`-dlna=false`) an ordinary port mapping `8200:8200` is enough.
 
+Several library folders are mounted as several volumes and named in the
+command (or in `libraries:` of `/config/mediakeeper/config.yaml`, with the
+paths inside the container):
+
+```yaml
+    volumes:
+      - ./media:/media
+      - /mnt/disk2/films:/films
+      - /mnt/disk2/series:/series
+      - ./config:/config
+    command: ["-serve", "/media", "-movies", "/films", "-shows", "/series"]
+```
+
+Organizing them by hand is then `docker compose run --rm mediakeeper /media
+-movies /films -shows /series` (or with no folders at all when they are in the
+settings).
+
 ### Identifying files with Docker
 
 New titles are easiest to add on the Downloads page of the web interface.
@@ -353,21 +446,27 @@ docker run --rm --user "$(id -u):$(id -g)" \
 ## Options
 
 ```
-mediakeeper [options] [directory]        (directory: the current one by default)
+mediakeeper [options] [directory ...]
 ```
+
+Without folders, the `libraries` of the settings file are used, else the
+current directory.
 
 | Option          | Meaning                                                                 |
 |-----------------|-------------------------------------------------------------------------|
 | `-dry-run`      | Show the plan and change nothing                                        |
 | `-yes`          | Ask nothing: skip unclear files and apply the plan                      |
-| `-undo`         | Revert the last run in this directory; repeat to go further back        |
+| `-movies DIR`   | A library folder of movies only; may be repeated                        |
+| `-shows DIR`    | A library folder of series only; may be repeated                        |
+| `-undo`         | Revert the last run in each folder; repeat to go further back           |
 | `-out DIR`      | Build the library in `DIR` instead of where the files are               |
 | `-no-tags`      | Do not write tags into the files                                        |
 | `-refresh`      | Also redo videos that already have an `.nfo`, identifying them from scratch |
 | `-sources LIST` | Comma-separated sources in priority order                               |
 | `-lang CODE`    | Language of TMDB titles and descriptions, e.g. `ru-RU` (default `en-US`) |
 | `-setup`        | Enter API keys and exit                                                 |
-| `-serve`        | Run the media server for the directory instead of organizing it         |
+| `-config FILE`  | The settings file, or a folder for `config.yaml` in it (default: next to the program) |
+| `-serve`        | Run the media server for the folders instead of organizing them         |
 | `-port N`       | With `-serve`: HTTP port (default 8200)                                 |
 | `-name NAME`    | With `-serve`: the name clients show (default: the host name)          |
 | `-dlna=false`   | With `-serve`: do not be a DLNA server (DLNA has no login)              |
@@ -376,7 +475,16 @@ mediakeeper [options] [directory]        (directory: the current one by default)
 
 ## Settings file
 
-`~/.config/mediakeeper/config.yaml` (in Docker: `/config/mediakeeper/config.yaml`).
+`config.yaml` next to the program. Another file can be given with
+`-config /path/to/config.yaml` (or a folder, for `config.yaml` in it) or in the
+variable `MEDIAKEEPER_CONFIG`. Where the program's folder cannot be written to
+(`/usr/local/bin`, a package manager's folder), the file is kept in
+`~/.config/mediakeeper/` instead; in Docker it is
+`/config/mediakeeper/config.yaml`. Settings that an earlier version kept in
+`~/.config/mediakeeper/` are moved next to the program on the first start,
+together with `server.json` (stop a running server before that, or it will
+write its accounts back to the old place).
+
 Every setting is optional, and a flag on the command line wins over the file.
 `mediakeeper -setup` writes the file with a comment for every setting;
 it can be edited by hand afterwards. A misspelt key is reported instead of
@@ -391,6 +499,13 @@ language: ru-RU
 sources: [tmdb, tvmaze, omdb, wikidata, imdb]
 tmdb_api_url: https://api.themoviedb.org/3
 tmdb_image_url: https://image.tmdb.org/t/p/original
+
+libraries:           # used when no folder is given on the command line
+  - /srv/media       # a plain path: both, in Movies/ and Shows/ inside
+  - path: /mnt/disk2/films
+    kind: movies     # movies only
+  - path: /mnt/disk2/series
+    kind: shows      # series only
 
 server:              # mediakeeper -serve
   name: Living room  # the name clients show; the host name by default

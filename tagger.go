@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ type TagInfo struct {
 	Show        string
 	Season      int
 	Episode     int
+	Cover       string // a JPEG to embed as the cover picture, if the container has a place for one
 }
 
 var errNoTagTool = errors.New("mkvpropedit/ffmpeg not found")
@@ -88,14 +90,57 @@ func tagMKV(tool, path string, t *TagInfo) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return runTool(tool, path, "--edit", "info", "--set", "title="+t.Title, "--tags", "global:"+tmp.Name())
+	args := []string{path, "--edit", "info", "--set", "title=" + t.Title, "--tags", "global:" + tmp.Name()}
+	if t.Cover == "" {
+		return runTool(tool, args...)
+	}
+	// The cover replaces an earlier one. mkvpropedit warns (and exits with
+	// 1) when asked to delete one that is not there, so it is looked up.
+	if mkvHasCover(path) {
+		args = append(args, "--delete-attachment", "name:cover.jpg")
+	}
+	args = append(args, "--attachment-name", "cover.jpg", "--attachment-mime-type", "image/jpeg", "--add-attachment", t.Cover)
+	return runTool(tool, args...)
+}
+
+// mkvHasCover asks mkvmerge whether the file already has a cover.jpg.
+func mkvHasCover(path string) bool {
+	tool, err := exec.LookPath("mkvmerge")
+	if err != nil {
+		return false
+	}
+	out, err := exec.Command(tool, "-J", path).Output()
+	if err != nil {
+		return false
+	}
+	var info struct {
+		Attachments []struct {
+			FileName string `json:"file_name"`
+		} `json:"attachments"`
+	}
+	json.Unmarshal(out, &info)
+	for _, a := range info.Attachments {
+		if a.FileName == "cover.jpg" {
+			return true
+		}
+	}
+	return false
 }
 
 func tagFFmpeg(tool, path string, t *TagInfo) error {
 	dir, base := filepath.Split(path)
 	// The extension stays last: ffmpeg picks the container by it.
 	tmp := filepath.Join(dir, ".mk-tmp-"+base)
-	args := []string{"-nostdin", "-v", "error", "-y", "-i", path, "-map", "0", "-c", "copy", "-map_metadata", "0"}
+	args := []string{"-nostdin", "-v", "error", "-y", "-i", path}
+	switch ext := strings.ToLower(filepath.Ext(path)); {
+	case t.Cover != "" && (ext == ".mp4" || ext == ".m4v" || ext == ".mov"):
+		// An earlier cover is dropped (0:V is video that is not a picture),
+		// the new one goes after the film.
+		args = append(args, "-i", t.Cover, "-map", "0", "-map", "-0:v", "-map", "0:V", "-map", "1",
+			"-c", "copy", "-disposition:v:1", "attached_pic", "-map_metadata", "0")
+	default:
+		args = append(args, "-map", "0", "-c", "copy", "-map_metadata", "0")
+	}
 	add := func(name, value string) {
 		if value != "" {
 			args = append(args, "-metadata", name+"="+value)

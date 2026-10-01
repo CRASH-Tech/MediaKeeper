@@ -45,11 +45,16 @@ services:
 
     volumes:
       - ./media:/media # the library: Movies/ and Shows/ are created inside
+      # More library folders, e.g. on another disk (add them to the command):
+      # - /mnt/disk2/films:/films
+      # - /mnt/disk2/series:/series
       - ./config:/config # settings, accounts, watch progress; must be writable by the user above
 
     # The server's settings can also live in ./config/mediakeeper/config.yaml.
     # The name clients show is the host name unless set with -name.
     command: ["-serve", "-port", "8200", "/media"]
+    # With more folders: a folder of movies only, a folder of series only.
+    # command: ["-serve", "-port", "8200", "/media", "-movies", "/films", "-shows", "/series"]
 
     # Needed by "docker compose run" for the interactive dialogs.
     stdin_open: true

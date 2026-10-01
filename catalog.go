@@ -17,7 +17,8 @@ type CatItem struct {
 	ID   string // 32 hex digits, stable while the file keeps its place
 	Kind string // kindMovie or "episode"
 
-	Path, Rel string
+	Path, Rel string // Rel: within its library folder
+	Root      string // that library folder
 	Size      int64
 	ModTime   time.Time
 	Subs      []string // .srt files next to the video
@@ -99,15 +100,28 @@ func nfoID(info *nfoInfo, kind string) string {
 	return ""
 }
 
-// buildCatalog scans root. Titles, plots and artwork come from the .nfo
-// and image files MediaKeeper writes; a video without them is listed under
-// the name guessed from its file name.
-func buildCatalog(root string) (*Catalog, error) {
-	files, err := Scan(root)
-	if err != nil {
-		return nil, err
-	}
+// buildCatalog scans the library folders. Titles, plots and artwork come
+// from the .nfo and image files MediaKeeper writes; a video without them is
+// listed under the name guessed from its file name.
+func buildCatalog(roots []Root) (*Catalog, error) {
 	cat := &Catalog{items: map[string]*CatItem{}, shows: map[string]*CatShow{}, seasons: map[string]*CatSeason{}}
+	for i, r := range roots {
+		if err := cat.add(r, rootKey(roots, i)); err != nil {
+			return nil, err
+		}
+	}
+	cat.sort()
+	return cat, nil
+}
+
+// add puts the videos of one library folder into the catalogue. key tells
+// its titles from those of the other folders.
+func (cat *Catalog) add(r Root, key string) error {
+	root := r.Path
+	files, err := scanRoot(r)
+	if err != nil {
+		return err
+	}
 	for _, f := range files {
 		st, err := os.Stat(f.Path)
 		if err != nil {
@@ -115,7 +129,7 @@ func buildCatalog(root string) (*Catalog, error) {
 		}
 		dir := filepath.Dir(f.Path)
 		stem := strings.TrimSuffix(filepath.Base(f.Path), filepath.Ext(f.Path))
-		it := &CatItem{Path: f.Path, Rel: f.Rel, Size: st.Size(), ModTime: st.ModTime(),
+		it := &CatItem{Path: f.Path, Rel: f.Rel, Root: root, Size: st.Size(), ModTime: st.ModTime(),
 			Title: f.Guess.Title, Year: f.Guess.Year}
 		for _, sc := range f.Sidecars {
 			if strings.EqualFold(filepath.Ext(sc), ".srt") {
@@ -143,13 +157,16 @@ func buildCatalog(root string) (*Catalog, error) {
 		}
 
 		if !isEpisode {
-			it.Kind, it.ID = kindMovie, catalogID(kindMovie, f.Rel)
+			it.Kind, it.ID = kindMovie, catalogID(kindMovie, key+f.Rel)
 			if it.Title == "" {
 				it.Title = stem
 			}
-			if dir != root { // a loose file in the root has no artwork of its own
+			if dir != root { // a loose file in the root shares the folder: only artwork named after it is its own
 				it.Poster = firstExisting(filepath.Join(dir, "poster.jpg"), filepath.Join(dir, stem+"-poster.jpg"))
-				it.Backdrop = firstExisting(filepath.Join(dir, "backdrop.jpg"), filepath.Join(dir, "fanart.jpg"))
+				it.Backdrop = firstExisting(filepath.Join(dir, "backdrop.jpg"), filepath.Join(dir, "fanart.jpg"), filepath.Join(dir, stem+"-backdrop.jpg"))
+			} else {
+				it.Poster = firstExisting(filepath.Join(dir, stem+"-poster.jpg"))
+				it.Backdrop = firstExisting(filepath.Join(dir, stem+"-backdrop.jpg"))
 			}
 			cat.Movies = append(cat.Movies, it)
 			cat.items[it.ID] = it
@@ -173,6 +190,7 @@ func buildCatalog(root string) (*Catalog, error) {
 				break
 			}
 		}
+		showKey = key + showKey // a series is not merged with one of the same name on another disk
 		showID := catalogID("show", showKey)
 		show := cat.shows[showID]
 		if show == nil {
@@ -217,7 +235,7 @@ func buildCatalog(root string) (*Catalog, error) {
 			cat.seasons[seasonID] = season
 			show.Seasons = append(show.Seasons, season)
 		}
-		it.Kind, it.ID, it.Show, it.Season = kindEpisode, catalogID(kindEpisode, f.Rel), show, season
+		it.Kind, it.ID, it.Show, it.Season = kindEpisode, catalogID(kindEpisode, key+f.Rel), show, season
 		if info == nil || info.Title == "" {
 			it.Title = fmt.Sprintf("Episode %d", it.Episode)
 		}
@@ -225,7 +243,11 @@ func buildCatalog(root string) (*Catalog, error) {
 		season.Episodes = append(season.Episodes, it)
 		cat.items[it.ID] = it
 	}
+	return nil
+}
 
+// sort puts titles in alphabetical order and episodes in theirs.
+func (cat *Catalog) sort() {
 	byTitle := func(a, b string) bool { return strings.ToLower(a) < strings.ToLower(b) }
 	sort.SliceStable(cat.Movies, func(a, b int) bool { return byTitle(cat.Movies[a].Title, cat.Movies[b].Title) })
 	sort.SliceStable(cat.Shows, func(a, b int) bool { return byTitle(cat.Shows[a].Title, cat.Shows[b].Title) })
@@ -235,7 +257,6 @@ func buildCatalog(root string) (*Catalog, error) {
 			sort.SliceStable(season.Episodes, func(a, b int) bool { return season.Episodes[a].Episode < season.Episodes[b].Episode })
 		}
 	}
-	return cat, nil
 }
 
 // Episodes returns all episodes of the show in order.
@@ -250,7 +271,7 @@ func (s *CatShow) Episodes() []*CatItem {
 // Library keeps the catalogue of a directory current: it is rescanned when
 // the last scan is old, so new files show up without a restart.
 type Library struct {
-	root   string
+	roots  []Root
 	prober *prober
 
 	mu      sync.Mutex
@@ -260,7 +281,7 @@ type Library struct {
 
 const catalogRescanAfter = 30 * time.Second
 
-func NewLibrary(root string, p *prober) *Library { return &Library{root: root, prober: p} }
+func NewLibrary(roots []Root, p *prober) *Library { return &Library{roots: roots, prober: p} }
 
 func (l *Library) Catalog() (*Catalog, error) {
 	l.mu.Lock()
@@ -268,7 +289,7 @@ func (l *Library) Catalog() (*Catalog, error) {
 	if l.cat != nil && time.Since(l.scanned) < catalogRescanAfter {
 		return l.cat, nil
 	}
-	cat, err := buildCatalog(l.root)
+	cat, err := buildCatalog(l.roots)
 	if err != nil {
 		if l.cat != nil {
 			return l.cat, nil // keep serving what is known

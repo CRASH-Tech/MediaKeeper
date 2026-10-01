@@ -356,7 +356,7 @@ async function toggleWatched(item) {
 }
 
 // A quiet button in the corner of the title: rarely needed, only for administrators.
-const fixButton = x => me.admin && h("button", { class: "edit", title: "Identified wrongly? Choose what this really is", onclick: () => openFix(x) }, "✎ Edit");
+const fixButton = x => me.admin && h("button", { class: "edit", title: "Edit the description, the artwork, or what this really is", onclick: () => openEdit(x) }, "✎ Edit");
 
 function renderMovie(id) {
   const m = library.movies.find(x => x.id === id);
@@ -368,6 +368,7 @@ function renderMovie(id) {
       m.position > 0 && h("button", { onclick: () => play(m, 0) }, "From the beginning"),
       !me.guest && h("button", { onclick: () => toggleWatched(m) }, m.played ? "Mark as not watched" : "Mark as watched"),
       h("a", { class: "button", href: `/api/stream/${m.id}`, download: "" }, "Download the file"))),
+    screenshots(m.id),
     h("div", { class: "details glass" }, details(m, [["File", file]])));
   // What is inside the file comes with a separate request.
   api("item/" + id).then(info => {
@@ -415,11 +416,13 @@ function renderShow(id) {
 //   search:  query -> Promise of candidates
 //   resolve: request body -> Promise
 //   st:      the form's state, kept by the caller across redraws
-function identifyForm({ unit, search, resolve, st, extra }) {
+//   fill:    the choice fills in a form instead of filing the files: a
+//            series is then simply taken as a movie, nothing is asked
+function identifyForm({ unit, search, resolve, st, extra, fill }) {
   Object.assign(st, { query: "", picked: null, candidates: null, asMovie: true, season: 1, episode: 1, ref: "", ...st });
   const holder = h("div", {});
   const error = h("p", { class: "error" });
-  const pickedSeries = () => st.picked && st.picked.kind === "tv" && unit.kind === "movie";
+  const pickedSeries = () => !fill && st.picked && st.picked.kind === "tv" && unit.kind === "movie";
   const submit = async body => {
     error.textContent = "";
     holder.classList.add("busy");
@@ -457,7 +460,7 @@ function identifyForm({ unit, search, resolve, st, extra }) {
           type: "button", class: "primary", disabled: !st.picked,
           onclick: () => submit({ source: st.picked.source, id: st.picked.id, kind: st.picked.kind,
             asMovie: pickedSeries() && st.asMovie, season: st.season, episode: pickedSeries() && !st.asMovie ? st.episode : 0 }),
-        }, "This is it")),
+        }, fill ? "Fill in the fields" : "This is it")),
     ].filter(Boolean));
   }
 
@@ -472,33 +475,320 @@ function identifyForm({ unit, search, resolve, st, extra }) {
     h("div", { class: "row", style: "margin-top:10px" }, query, h("button", { type: "button", onclick: find }, "Search")),
     holder,
     h("div", { class: "row", style: "margin-top:10px" }, ref,
-      h("button", { type: "button", onclick: () => st.ref.trim() && submit({ ref: st.ref, asMovie: unit.kind === "movie" }) }, "Set by ID"),
+      h("button", { type: "button", onclick: () => st.ref.trim() && submit({ ref: st.ref, asMovie: unit.kind === "movie" }) }, fill ? "Fill in by ID" : "Set by ID"),
       extra),
     error);
 }
 
-// openFix shows the form over the page for a title that is in the library
-// under a wrong name.
-function openFix(x) {
-  const close = () => box.remove();
-  const unit = { kind: isShow(x) ? "tv" : "movie", title: x.title, year: x.year };
+// screenshots is the strip of frames from the film. The server takes them
+// in the background; while it works the strip shows placeholders and asks
+// again every few seconds.
+function screenshots(id) {
+  const strip = h("div", { class: "shots" });
+  const box = h("section", { class: "screens hidden" }, h("h2", {}, "Screenshots"), strip);
+  let tries = 0;
+  async function load() {
+    if (!box.isConnected && tries > 0) return; // the page has changed
+    let res;
+    try { res = await api(`screens/${id}`); } catch { return; }
+    if (res.state === "unavailable" || (res.state === "failed" && !res.shots.length)) return;
+    box.classList.remove("hidden");
+    if (res.state === "pending") {
+      strip.replaceChildren(...Array.from({ length: 8 }, () => h("div", { class: "shot placeholder" })),
+        h("p", { class: "dim note" }, "Taking screenshots…"));
+      if (tries++ < 60) setTimeout(load, 3000);
+      return;
+    }
+    strip.replaceChildren(...res.shots.map((url, i) => h("button", {
+      class: "shot", style: `background-image:url("${url}")`, "aria-label": `Screenshot ${i + 1}`,
+      onclick: () => viewShots(res.shots, i),
+    })));
+  }
+  load();
+  return box;
+}
+
+// viewShots shows the screenshots one by one over the page.
+function viewShots(urls, index) {
+  const img = h("img", { alt: "" });
+  const counter = h("span", { class: "dim" });
+  const show = i => { index = (i + urls.length) % urls.length; img.src = urls[index]; counter.textContent = `${index + 1} / ${urls.length}`; };
+  const close = () => { box.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = e => {
+    if (e.key === "Escape") close();
+    else if (e.key === "ArrowRight") show(index + 1);
+    else if (e.key === "ArrowLeft") show(index - 1);
+  };
+  const box = h("div", { class: "modal lightbox", onclick: e => { if (e.target === box) close(); } },
+    h("div", { class: "frame" },
+      img,
+      h("div", { class: "bar glass" },
+        h("button", { class: "small", onclick: () => show(index - 1), "aria-label": "Previous" }, "‹"),
+        counter,
+        h("button", { class: "small", onclick: () => show(index + 1), "aria-label": "Next" }, "›"),
+        h("button", { class: "small", onclick: close }, "Close"))));
+  // A swipe on a phone or a tablet.
+  let startX = null;
+  img.addEventListener("touchstart", e => { startX = e.touches[0].clientX; }, { passive: true });
+  img.addEventListener("touchend", e => {
+    const dx = e.changedTouches[0].clientX - startX;
+    if (Math.abs(dx) > 40) show(index + (dx < 0 ? 1 : -1));
+  });
+  document.addEventListener("keydown", onKey);
+  document.body.append(box);
+  show(index);
+}
+
+// toast shows a short message at the bottom of the screen.
+function toast(text) {
+  const el = h("div", { class: "toast glass" }, text);
+  document.body.append(el);
+  setTimeout(() => el.classList.add("gone"), 3500);
+  setTimeout(() => el.remove(), 4200);
+}
+
+const listText = values => (values || []).join(", ");
+const textList = text => text.split(",").map(v => v.trim()).filter(Boolean);
+const castText = cast => (cast || []).map(p => p.role ? `${p.name} — ${p.role}` : p.name).join("\n");
+const textCast = text => text.split("\n").map(line => line.trim()).filter(Boolean).map(line => {
+  const [name, ...role] = line.split(/\s+[—–-]\s+/);
+  return { name: name.trim(), role: role.join(" — ").trim() };
+});
+
+// openEdit is the administrator's sheet for a title: its description, which
+// can be filled in from a catalogue, its artwork, and the screenshots of a
+// movie or the episodes of a series.
+function openEdit(x) {
+  const movie = !isShow(x);
+  let dirty = false; // something was saved: the page is drawn anew on closing
+  const saved = () => { dirty = true; library = null; };
+  const close = () => {
+    box.remove();
+    document.removeEventListener("keydown", onKey);
+    if (dirty) render();
+  };
+  const onKey = e => { if (e.key === "Escape" && !e.target.closest("input, textarea, select")) close(); };
+  const tabs = [["details", "Description"], ["images", "Images"], !movie && ["episodes", "Episodes"]].filter(Boolean);
+  let current = tabs[0][0];
+  const body = h("div", {});
+  const tabBar = h("div", { class: "tabs" });
+  const choose = id => {
+    current = id;
+    tabBar.replaceChildren(...tabs.map(([tab, label]) => h("button", { class: tab === current ? "active" : "", onclick: () => choose(tab) }, label)));
+    body.replaceChildren({ details: detailsTab, images: imagesTab, episodes: episodesTab }[id]());
+  };
+  const field = (label, input) => h("label", { class: "field" }, h("span", {}, label), input);
+  const text = (value, attrs) => h("input", { type: "text", value: value || "", ...attrs });
+  // upload sends a picture chosen in a file field, then shows it in place.
+  const upload = async (input, part, preview, src) => {
+    if (!input.files.length) return;
+    const form = new FormData();
+    form.append("image", input.files[0]);
+    try {
+      const res = await api(`meta/${part}`, { method: "POST", body: form });
+      preview.style.backgroundImage = `url("${src}?t=${Date.now()}")`;
+      saved();
+      toast(res.tags ? "Saved. The poster is being embedded in the file." : "Saved.");
+    } catch (err) { alert(err.message); }
+    input.value = "";
+  };
+
+  function detailsTab() {
+    const holder = h("div", {}, h("p", { class: "dim" }, "Loading…"));
+    api(`meta/${x.id}`).then(m => {
+      const f = {
+        title: text(m.title), originalTitle: text(m.originalTitle), localTitle: text(m.localTitle),
+        year: text(m.year || "", { inputMode: "numeric" }), released: text(m.released, { placeholder: "2008-04-30" }),
+        status: text(m.status, { placeholder: "Continuing, Ended" }),
+        mpaa: text(m.mpaa, { placeholder: "PG-13" }), rating: text(m.rating || "", { inputMode: "decimal", placeholder: "0–10" }),
+        tagline: text(m.tagline), plot: h("textarea", { rows: 5, value: m.plot || "" }),
+        genres: text(listText(m.genres)), directors: text(listText(m.directors)), writers: text(listText(m.writers)),
+        studios: text(listText(m.studios)), countries: text(listText(m.countries)),
+        cast: h("textarea", { rows: 6, value: castText(m.cast), placeholder: "Robert Downey Jr. — Tony Stark" }),
+      };
+      // Set when the fields are filled in from a catalogue.
+      let source = null, photos = {};
+      const takeArt = h("input", { type: "checkbox", id: "take-art", checked: true });
+      const artRow = h("label", { class: "check hidden", for: "take-art" }, takeArt, h("span", {}));
+      // A movie can be renamed after its fields at any time; a series only
+      // after a catalogue entry, which also names its episodes.
+      const rename = h("input", { type: "checkbox", id: "rename" });
+      const renameRow = h("label", { class: movie ? "check" : "check hidden", for: "rename" }, rename,
+        h("span", {}, "Rename the files after the title and year"));
+      const filledNote = h("p", { class: "filled hidden" });
+
+      const fillIn = r => {
+        const m = r.meta;
+        f.title.value = m.title || ""; f.originalTitle.value = m.originalTitle || ""; f.localTitle.value = m.localTitle || "";
+        f.year.value = m.year || ""; f.released.value = m.released || ""; f.status.value = m.status || "";
+        f.mpaa.value = m.mpaa || ""; f.rating.value = m.rating || "";
+        f.tagline.value = m.tagline || ""; f.plot.value = m.plot || "";
+        f.genres.value = listText(m.genres); f.directors.value = listText(m.directors); f.writers.value = listText(m.writers);
+        f.studios.value = listText(m.studios); f.countries.value = listText(m.countries); f.cast.value = castText(m.cast);
+        photos = Object.fromEntries((m.cast || []).filter(p => p.thumb).map(p => [p.name, p.thumb]));
+        source = r;
+        const art = [r.posterUrl && "poster", r.backdropUrl && "backdrop"].filter(Boolean);
+        artRow.classList.toggle("hidden", !art.length);
+        artRow.lastChild.textContent = `Also take the ${art.join(" and ")} from ${r.sourceName}`;
+        if (!movie) renameRow.lastChild.textContent = `Rename the files, and take the titles, descriptions and stills of the episodes from ${r.sourceName}`;
+        renameRow.classList.remove("hidden");
+        rename.checked = true;
+        filledNote.textContent = `Filled in from ${r.sourceName}. Check the fields, then save.`;
+        filledNote.classList.remove("hidden");
+        finder.classList.add("hidden");
+        f.title.focus();
+      };
+      const finder = h("div", { class: "finder hidden" },
+        identifyForm({
+          unit: { kind: movie ? "movie" : "tv", title: m.title, year: m.year }, st: {}, fill: true,
+          search: q => api(`fix/${x.id}/search?q=${encodeURIComponent(q)}`),
+          resolve: async body => fillIn(await api(`meta/${x.id}/lookup`, { json: body })),
+        }));
+      const error = h("p", { class: "error" });
+      const save = h("button", { class: "primary", type: "submit" }, "Save");
+      holder.replaceChildren(
+        h("div", { class: "row" },
+          h("button", { type: "button", onclick: () => finder.classList.toggle("hidden") }, "Fill in from a catalogue…"),
+          h("span", { class: "dim" }, "Search all sources and pick the right one: the fields are filled in for you to check.")),
+        m.noFolder && h("p", { class: "filled warn" }, "The episodes are not in a folder of their own yet. Fill the fields in from a catalogue and let the files be renamed: that files them into one."),
+        finder, filledNote,
+        h("form", {
+          class: "meta-form",
+          onsubmit: async e => {
+            e.preventDefault();
+            error.textContent = "";
+            save.disabled = true;
+            const cast = textCast(f.cast.value).map(p => ({ ...p, thumb: photos[p.name] || "" }));
+            try {
+              const res = await api(`meta/${x.id}`, { json: {
+                title: f.title.value, originalTitle: f.originalTitle.value, localTitle: f.localTitle.value,
+                year: +f.year.value || 0, released: f.released.value.trim(), mpaa: f.mpaa.value, rating: +String(f.rating.value).replace(",", ".") || 0,
+                plot: f.plot.value, genres: textList(f.genres.value), studios: textList(f.studios.value), cast,
+                ...(movie ? {
+                  tagline: f.tagline.value, directors: textList(f.directors.value), writers: textList(f.writers.value),
+                  countries: textList(f.countries.value),
+                } : { status: f.status.value }),
+                rename: rename.checked && (movie || !!source),
+                ...(source ? {
+                  source: source.source, sourceId: source.sourceId, sourceKind: source.sourceKind, ids: source.ids,
+                  posterUrl: takeArt.checked ? source.posterUrl : "", backdropUrl: takeArt.checked ? source.backdropUrl : "",
+                } : {}),
+              } });
+              saved();
+              // A renamed title has a new address: a movie goes back to the
+              // list, a series to its new page.
+              if (movie && rename.checked) location.hash = "#movies";
+              else if (res.id && res.id !== x.id) location.hash = "#show/" + res.id;
+              close();
+              if (res.problems && res.problems.length) alert("Saved, but: " + res.problems.join("; "));
+              else toast(res.tags ? "Saved. The tags inside the files are being updated." : "Saved.");
+            } catch (err) { error.textContent = err.message; save.disabled = false; }
+          },
+        },
+          h("div", { class: "fields" },
+            field("Title", f.title), field("Original title", f.originalTitle), field("Russian title", f.localTitle),
+            field("Year", f.year), field(movie ? "Released" : "First aired", f.released), !movie && field("Status", f.status),
+            field("Age rating", f.mpaa), field("Rating", f.rating)),
+          movie && field("Tagline", f.tagline), field("Plot", f.plot),
+          h("div", { class: "fields" },
+            field("Genres", f.genres), movie && field("Directed by", f.directors), movie && field("Written by", f.writers),
+            field("Studios", f.studios), movie && field("Countries", f.countries)),
+          h("p", { class: "dim hint" }, "Lists are separated by commas. Cast: one actor per line, the role after a dash."),
+          field("Cast", f.cast),
+          artRow, renameRow,
+          h("div", { class: "row" }, save, h("span", { class: "dim" },
+            movie ? "Written into the .nfo and the tags of the file." : "Written into tvshow.nfo, and the title and genres into the tags of the episodes.")),
+          error));
+    }).catch(err => holder.replaceChildren(h("p", { class: "error" }, err.message)));
+    return holder;
+  }
+
+  function imagesTab() {
+    // card is one picture: what it is now, and a field to replace it.
+    const card = (part, cls, label, note, src, has) => {
+      const preview = h("div", { class: "art " + cls, style: has ? `background-image:url("${src}?t=${Date.now()}")` : "" });
+      const input = h("input", { type: "file", accept: "image/jpeg,image/png", "aria-label": label, onchange: () => upload(input, `${x.id}/${part}`, preview, src) });
+      return h("div", { class: "art-card" }, preview, h("b", {}, label), note && h("span", { class: "dim" }, note), input);
+    };
+    const main = h("div", { class: "art-cards" },
+      card("poster", "poster", "Poster", "A tall picture, JPEG or PNG.", `/api/image/${x.id}/poster`, x.poster),
+      card("backdrop", "backdrop", "Backdrop", "A wide picture behind the title.", `/api/image/${x.id}/backdrop`, x.backdrop));
+    if (!movie) return h("div", {}, main,
+      h("h3", { class: "sub" }, "Season posters"),
+      h("div", { class: "art-cards seasons" }, x.seasons.map(s => card(`season${String(s.number).padStart(2, "0")}`, "poster",
+        s.number ? `Season ${s.number}` : "Specials", "", `/api/image/${s.id}/poster`, s.poster))));
+    return h("div", {}, main,
+      h("div", { class: "row tools" },
+        h("button", {
+          onclick: async e => {
+            e.target.disabled = true;
+            try { await api(`screens/${x.id}/regenerate`, { method: "POST" }); dirty = true; close(); }
+            catch (err) { e.target.disabled = false; alert(err.message); }
+          },
+        }, "Regenerate screenshots"),
+        h("span", { class: "dim" }, "New frames from other moments of the film.")));
+  }
+
+  // episodesTab lists the episodes of one season; each is saved on its own.
+  function episodesTab() {
+    const holder = h("div", {}, h("p", { class: "dim" }, "Loading…"));
+    api(`meta/${x.id}/episodes`).then(list => {
+      const seasons = [...new Set(list.map(e => e.season))];
+      let season = seasons.includes(openSeason[x.id]) ? openSeason[x.id] : seasons[0];
+      const listBox = h("div", { class: "ep-list" });
+      const draw = () => listBox.replaceChildren(...list.filter(e => e.season === season).map(episodeForm));
+      const picker = h("select", { "aria-label": "Season", onchange: () => { season = +picker.value; draw(); } },
+        seasons.map(n => h("option", { value: n, selected: n === season }, n ? `Season ${n}` : "Specials")));
+      holder.replaceChildren(
+        h("div", { class: "row" }, picker, h("span", { class: "dim" }, "Each episode is saved on its own, into its .nfo and the tags of its file.")),
+        listBox);
+      draw();
+    }).catch(err => holder.replaceChildren(h("p", { class: "error" }, err.message)));
+    return holder;
+  }
+
+  function episodeForm(e) {
+    const pad = n => String(n).padStart(2, "0");
+    const number = `S${pad(e.season)}E${pad(e.episode)}${e.episodeEnd > e.episode ? "-E" + pad(e.episodeEnd) : ""}`;
+    const changed = () => { save.disabled = false; };
+    const title = text(e.title, { placeholder: `Episode ${e.episode}`, oninput: changed });
+    const aired = text(e.aired, { placeholder: "2001-09-26", oninput: changed });
+    const plot = h("textarea", { rows: 3, value: e.plot || "", oninput: changed });
+    const save = h("button", { class: "primary small", type: "submit", disabled: true }, "Save");
+    const error = h("span", { class: "error" });
+    const src = `/api/image/${e.id}/thumb`;
+    const still = h("div", { class: "art still", style: e.thumb ? `background-image:url("${src}?t=${Date.now()}")` : "" });
+    const file = h("input", { type: "file", accept: "image/jpeg,image/png", class: "hidden", onchange: () => upload(file, `${e.id}/thumb`, still, src) });
+    return h("form", {
+      class: "ep-edit",
+      onsubmit: async ev => {
+        ev.preventDefault();
+        error.textContent = "";
+        save.disabled = true;
+        const values = { title: title.value.trim(), aired: aired.value.trim(), plot: plot.value };
+        try {
+          const res = await api(`meta/${e.id}`, { json: values });
+          Object.assign(e, values);
+          saved();
+          toast(res.tags ? "Saved. The tags inside the file are being updated." : "Saved.");
+        } catch (err) { error.textContent = err.message; save.disabled = false; }
+      },
+    },
+      h("label", { class: "still-pick", title: "Choose another still" }, still, h("span", { class: "dim" }, "Change the still"), file),
+      h("div", { class: "grow" },
+        h("div", { class: "ep-head" }, h("b", {}, number), h("span", { class: "dim" }, e.file)),
+        h("div", { class: "fields" }, field("Title", title), field("Aired", aired)),
+        field("Plot", plot),
+        h("div", { class: "row" }, save, error)));
+  }
+
   const box = h("div", { class: "modal", onclick: e => { if (e.target === box) close(); } },
     h("div", { class: "panel glass sheet" },
-      h("div", { class: "row" }, h("h2", { class: "grow", style: "margin:0" }, "What is it really?"), h("button", { class: "small", onclick: close }, "Close")),
-      h("p", { class: "dim" }, "The files are renamed and moved as for a new title, and the description and artwork are replaced."),
-      identifyForm({
-        unit, st: {},
-        search: q => api(`fix/${x.id}/search?q=${encodeURIComponent(q)}`),
-        resolve: async body => {
-          await api(`fix/${x.id}`, { json: body });
-          library = null;
-          close();
-          // The title has a new address now: back to the list it is in.
-          location.hash = isShow(x) ? "#shows" : "#movies";
-          render();
-        },
-      })));
+      h("div", { class: "row" }, h("h2", { class: "grow", style: "margin:0" }, `Edit · ${x.title}`), h("button", { class: "small", onclick: close }, "Close")),
+      tabBar, body));
   document.body.append(box);
+  document.addEventListener("keydown", onKey);
+  choose(current);
 }
 
 // ----------------------------------------------------------------- player

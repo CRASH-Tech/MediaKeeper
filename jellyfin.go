@@ -853,7 +853,7 @@ func (c *jfContext) mediaSource(it *CatItem) map[string]any {
 		case "video":
 			m["Type"], m["Width"], m["Height"] = "Video", st.Width, st.Height
 			m["VideoRange"], m["VideoRangeType"] = "SDR", "SDR"
-			m["IsAVC"], m["IsAnamorphic"] = st.Codec == "h264", false
+			m["IsAVC"], m["IsAnamorphic"], m["IsInterlaced"] = st.Codec == "h264", false, st.Interlaced()
 			m["PixelFormat"], m["AspectRatio"], m["RefFrames"] = st.PixelFormat, st.AspectRatio, st.Refs
 			m["BitDepth"] = max(st.BitDepth, 8)
 			if strings.Contains(st.PixelFormat, "10") {

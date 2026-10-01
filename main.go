@@ -66,12 +66,14 @@ func buildProviders(cfg Config) (providers []Provider, noKey []string, err error
 }
 
 type App struct {
-	ui     *UI
-	hub    *Hub
-	root   string // scanned directory
-	out    string // -out, or the scanned directory
-	outSet bool   // -out was given: everything is gathered there
-	files  []*MediaFile
+	ui       *UI
+	hub      *Hub
+	root     string // scanned directory
+	kind     string // what it holds: rootMovies, rootShows or rootMixed (both)
+	out      string // -out, or the scanned directory
+	outSet   bool   // -out was given: everything is gathered there
+	outRoots []Root // with outSet: the library folders new titles go to, by kind
+	files    []*MediaFile
 
 	yes, dryRun, noTags, refresh bool
 	keepDescribed                bool // leave videos that have an .nfo alone: not renamed, not looked up, not tagged
@@ -92,19 +94,20 @@ func main() {
 }
 
 func run(args []string, in io.Reader, out io.Writer) error {
-	cfg, hasConfig, cfgErr := loadConfig()
 	fs := flag.NewFlagSet("mediakeeper", flag.ContinueOnError)
 	fs.SetOutput(out)
 	fs.Usage = func() {
-		fmt.Fprintf(out, "Usage: mediakeeper [options] [directory]\n\n"+
-			"Finds movies and series in the directory (the current one by default),\n"+
+		fmt.Fprintf(out, "Usage: mediakeeper [options] [directory ...]\n\n"+
+			"Finds movies and series in the directories (those of \"libraries\" in the\n"+
+			"settings, or the current one, by default; -movies and -shows add folders of\n"+
+			"a single kind),\n"+
 			"identifies them in online catalogues, renames them the Jellyfin way, writes\n"+
 			".nfo files and downloads artwork. With -serve it becomes a media server: a\n"+
 			"web interface to browse, watch and download, a Jellyfin-compatible API for\n"+
 			"Jellyfin apps, and DLNA for TVs.\n\n"+
 			"Sources: tmdb, omdb, kinopoisk (need a key), tvmaze, wikidata, imdb,\n"+
 			"letterboxd (no key). Keys: mediakeeper -setup, or the variables TMDB_API_KEY,\n"+
-			"OMDB_API_KEY, KINOPOISK_API_KEY. Settings: %s\n\n", configPath())
+			"OMDB_API_KEY, KINOPOISK_API_KEY. Settings: %s\n\n", configLocation())
 		fs.PrintDefaults()
 	}
 	outDir := fs.String("out", "", "build the library in this directory (default: every title stays in the folder it is in)")
@@ -122,11 +125,30 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	dlna := fs.Bool("dlna", true, "with -serve: also be a DLNA media server (no login, the whole local network can watch)")
 	guests := fs.Bool("guests", true, "with -serve: the web interface can be browsed and watched without signing in")
 	showVersion := fs.Bool("version", false, "print the version and exit")
-	if err := fs.Parse(args); err != nil {
-		return err
+	configFlag := fs.String("config", "", "the settings file, or a folder for config.yaml in it (default: next to the program; also MEDIAKEEPER_CONFIG)")
+	var given []Root
+	fs.Var(rootList{rootMovies, &given}, "movies", "a library folder of movies only; may be repeated")
+	fs.Var(rootList{rootShows, &given}, "shows", "a library folder of series only; may be repeated")
+	// Flags may also follow the folders: -serve /media -movies /films.
+	var folders []string
+	for rest := args; ; {
+		if err := fs.Parse(rest); err != nil {
+			return err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		folders = append(folders, fs.Arg(0))
+		rest = fs.Args()[1:]
 	}
-	if cfgErr != nil {
-		return cfgErr
+	if *configFlag != "" {
+		if err := useConfig(*configFlag); err != nil {
+			return err
+		}
+	}
+	cfg, hasConfig, err := loadConfig()
+	if err != nil {
+		return err
 	}
 	set := map[string]bool{} // flags given on the command line win over the settings file
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
@@ -140,25 +162,19 @@ func run(args []string, in io.Reader, out io.Writer) error {
 		return askKeys(ui, &cfg)
 	}
 
-	root := "."
-	if fs.NArg() > 1 {
-		return errors.New("give a single directory")
-	} else if fs.NArg() == 1 {
-		root = fs.Arg(0)
-	}
-	root, err := filepath.Abs(root)
+	roots, err := libraryRoots(cfg, folders, given)
 	if err != nil {
 		return err
 	}
-	if st, err := os.Stat(root); err != nil {
-		return err
-	} else if !st.IsDir() {
-		return fmt.Errorf("%s is not a directory", root)
-	}
 	if *undo {
-		return Undo(ui, root)
+		for _, r := range roots {
+			if err := Undo(ui, r.Path); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	dest := root
+	dest := ""
 	if *outDir != "" {
 		if dest, err = filepath.Abs(*outDir); err != nil {
 			return err
@@ -191,7 +207,7 @@ func run(args []string, in io.Reader, out io.Writer) error {
 		return err
 	}
 	if *serve {
-		o := ServerOptions{Root: root, Name: *name, Port: *port, DLNA: *dlna, Guests: *guests, NoTags: *noTags, Config: cfg}
+		o := ServerOptions{Roots: roots, Name: *name, Port: *port, DLNA: *dlna, Guests: *guests, NoTags: *noTags, Config: cfg}
 		sc := cfg.Server
 		if !set["name"] && sc.Name != "" {
 			o.Name = sc.Name
@@ -217,9 +233,7 @@ func run(args []string, in io.Reader, out io.Writer) error {
 		return errors.New("no sources at all: check -sources and the keys (mediakeeper -setup)")
 	}
 
-	a := &App{ui: ui, root: root, out: dest, outSet: *outDir != "",
-		yes: *yes, dryRun: *dryRun, noTags: *noTags, refresh: *refresh, keepDescribed: !*refresh}
-	a.hub = NewHub(providers, func(name, reason string) {
+	hub := NewHub(providers, func(name, reason string) {
 		ui.Printf("%s\n", ui.Dim(fmt.Sprintf("  (source %s is switched off for this run: %s)", name, reason)))
 	})
 
@@ -231,7 +245,49 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	if len(noKey) > 0 {
 		ui.Printf("%s\n", ui.Dim("Not used, no key: "+strings.Join(noKey, ", ")+" (mediakeeper -setup)"))
 	}
-	return a.Run()
+	for i, r := range roots {
+		if len(roots) > 1 {
+			ui.Printf("\n%s\n", ui.Bold(fmt.Sprintf("[%d/%d] %s", i+1, len(roots), r)))
+		}
+		a := &App{ui: ui, hub: hub, root: r.Path, kind: r.Kind, out: r.Path,
+			yes: *yes, dryRun: *dryRun, noTags: *noTags, refresh: *refresh, keepDescribed: !*refresh}
+		if dest != "" {
+			a.out, a.outSet, a.outRoots = dest, true, []Root{{Path: dest}}
+		}
+		if err := a.Run(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// libraryRoots are the folders to work on: those given on the command
+// line, else the libraries of the settings, else the current directory. A
+// folder given by its path alone keeps the kind the settings give it.
+// Folders given by their paths come first, then -movies and -shows: adding
+// "-movies /disk2" to "-serve /media" keeps /media the first folder, which
+// holds the downloads and keeps the identifiers its titles had.
+func libraryRoots(cfg Config, args []string, given []Root) ([]Root, error) {
+	var roots []Root
+	for _, arg := range args {
+		r := Root{Path: arg}
+		if abs, err := filepath.Abs(arg); err == nil {
+			for _, known := range cfg.Libraries {
+				if p, err := filepath.Abs(expandHome(known.Path)); err == nil && p == abs {
+					r.Kind = known.Kind
+				}
+			}
+		}
+		roots = append(roots, r)
+	}
+	roots = append(roots, given...)
+	if len(roots) == 0 {
+		roots = cfg.Libraries
+	}
+	if len(roots) == 0 {
+		roots = []Root{{Path: "."}}
+	}
+	return checkRoots(roots)
 }
 
 // askKeys is the first-run dialog. Every key is optional: three sources

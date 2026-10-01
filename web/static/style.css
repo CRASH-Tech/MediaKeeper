@@ -399,8 +399,8 @@ th { color: var(--faint); font-weight: 700; font-size: 12px; text-transform: upp
   background: rgba(0, 0, 0, .35); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
   animation: fade .2s ease;
 }
-.modal .sheet { width: 100%; max-width: 780px; --glass: rgba(40, 42, 50, .55); animation: rise .28s cubic-bezier(.2, .9, .3, 1.1); }
-@media (prefers-color-scheme: light) { .modal .sheet { --glass: rgba(255, 255, 255, .78); } }
+.modal .sheet { width: 100%; max-width: 780px; --glass: rgba(34, 36, 44, .86); animation: rise .28s cubic-bezier(.2, .9, .3, 1.1); }
+@media (prefers-color-scheme: light) { .modal .sheet { --glass: rgba(255, 255, 255, .9); } }
 .modal .unit { border-top: 0; margin-top: 4px; padding-top: 0; }
 @keyframes fade { from { opacity: 0; } }
 @keyframes rise { from { opacity: 0; transform: translateY(16px) scale(.98); } }
@@ -412,4 +412,81 @@ th { color: var(--faint); font-weight: 700; font-size: 12px; text-transform: upp
 /* Without a blur the glass would be unreadable: make it solid instead. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   :root { --glass: rgba(28, 30, 38, .96); --glass-strong: rgba(44, 47, 58, .98); }
+}
+
+/* Screenshots: a strip under the title, a viewer over the page. */
+.screens { margin: 26px 0 0; max-width: 1060px; }
+.screens h2 { margin: 0 0 10px 4px; font-size: 12px; font-weight: 700; color: var(--faint); text-transform: uppercase; letter-spacing: .07em; }
+.shots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; position: relative; }
+@media (max-width: 720px) { .shots { grid-template-columns: repeat(2, 1fr); } }
+.shot {
+  aspect-ratio: 16 / 9; padding: 0; border-radius: var(--r-md); cursor: zoom-in;
+  background: var(--glass-strong) center / cover no-repeat;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .3), inset 0 0 0 1px rgba(255, 255, 255, .12);
+  -webkit-backdrop-filter: none; backdrop-filter: none; border: 0;
+  transition: transform .3s cubic-bezier(.2, .9, .3, 1.2), box-shadow .3s ease;
+}
+.shot:hover { background-color: var(--glass-strong); transform: scale(1.03); box-shadow: 0 14px 34px rgba(0, 0, 0, .4), inset 0 0 0 1px rgba(255, 255, 255, .25); }
+.shot.placeholder { cursor: default; animation: shimmer 1.6s ease-in-out infinite; }
+.shot.placeholder:hover { transform: none; }
+.shots .note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; margin: 0; font-weight: 600; }
+@keyframes shimmer { 50% { opacity: .55; } }
+.lightbox { align-items: center; padding: 16px; background: rgba(0, 0, 0, .8); }
+.lightbox .frame { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 100%; }
+.lightbox img { max-width: min(1280px, 100%); max-height: calc(100vh - 110px); border-radius: var(--r-md); box-shadow: 0 20px 60px rgba(0, 0, 0, .6); }
+.lightbox .bar { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--capsule); color: #fff; --text: #fff; }
+.lightbox .bar button { color: #fff; }
+.sheet .tools { padding: 12px 0 4px; }
+
+/* The edit sheet. */
+.sheet .tabs { margin: 16px 0 14px; }
+.meta-form .fields, .ep-edit .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 12px; }
+.field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; min-width: 0; }
+.field > span { font-size: 12px; font-weight: 700; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; margin-left: 6px; }
+.field input, .field textarea { width: 100%; }
+textarea {
+  font: inherit; color: var(--text); background: var(--glass-strong); resize: vertical;
+  border: 1px solid var(--glass-rim); border-top-color: var(--glass-rim-top); border-radius: var(--r-md); padding: 10px 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1);
+}
+textarea:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent); }
+.meta-form .hint { margin: 4px 0 8px 6px; font-size: 13px; }
+.art-cards { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; }
+@media (max-width: 600px) { .art-cards { grid-template-columns: 1fr; } }
+.art-card { display: flex; flex-direction: column; gap: 6px; }
+.art-card input { margin-top: 4px; }
+.art { border-radius: var(--r-md); background: var(--glass-strong) center / cover no-repeat; box-shadow: inset 0 0 0 1px var(--glass-rim); }
+.art.poster { aspect-ratio: 2 / 3; max-width: 220px; }
+.art.backdrop { aspect-ratio: 16 / 9; }
+.toast {
+  position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 30;
+  padding: 10px 20px; border-radius: var(--capsule); font-weight: 600; transition: opacity .6s ease;
+}
+.toast.gone { opacity: 0; }
+@media (max-width: 720px) { .toast { bottom: calc(96px + env(safe-area-inset-bottom)); } }
+.finder { margin: 12px 0 4px; padding: 14px 16px; border-radius: var(--r-lg); background: var(--glass); border: 1px solid var(--glass-rim); }
+.finder .unit { border-top: 0; margin-top: 0; padding-top: 0; }
+.filled { margin: 12px 0 0; padding: 8px 14px; border-radius: var(--r-md); font-weight: 600; background: color-mix(in srgb, var(--good) 18%, transparent); }
+.check { display: flex; align-items: center; gap: 10px; margin: 6px 0 12px 6px; cursor: pointer; }
+.meta-form { margin-top: 14px; }
+.filled.warn { background: color-mix(in srgb, var(--warn) 20%, transparent); }
+.sheet h3.sub { margin: 22px 0 10px 4px; font-size: 15px; }
+.art-cards.seasons { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 12px; }
+.art-cards.seasons .art.poster { max-width: none; }
+
+/* Episodes in the edit sheet: the still on the left, the fields beside it. */
+.ep-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.ep-edit { display: flex; gap: 14px; align-items: flex-start; padding: 12px; border-radius: var(--r-lg); background: var(--glass); border: 1px solid var(--glass-rim); }
+.ep-edit .grow { min-width: 0; }
+.ep-edit .fields { grid-template-columns: 2fr 1fr; }
+.ep-head { display: flex; gap: 10px; align-items: baseline; margin: 0 0 8px 6px; min-width: 0; }
+.ep-head .dim { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ep-edit .error:empty { display: none; }
+.still-pick { display: flex; flex-direction: column; gap: 6px; align-items: center; cursor: pointer; flex: 0 0 168px; font-size: 13px; }
+.art.still { width: 100%; aspect-ratio: 16 / 9; }
+.still-pick:hover .art { box-shadow: inset 0 0 0 2px var(--accent); }
+@media (max-width: 600px) {
+  .ep-edit { flex-direction: column; align-items: stretch; }
+  .still-pick { flex-basis: auto; width: 100%; }
+  .ep-edit .fields { grid-template-columns: 1fr; }
 }

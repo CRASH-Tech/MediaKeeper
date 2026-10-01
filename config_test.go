@@ -49,7 +49,7 @@ func TestConfigYAML(t *testing.T) {
 // The config.json of earlier versions is converted once.
 func TestConfigFromJSON(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	old := filepath.Join(configDir(), "config.json")
+	old := filepath.Join(legacyConfigDir(), "config.json")
 	os.MkdirAll(filepath.Dir(old), 0o700)
 	os.WriteFile(old, []byte(`{"omdb_api_key": "fromjson", "language": "ru-RU"}`), 0o600)
 	got, exists, err := loadConfig()
@@ -69,5 +69,86 @@ func fileExists(path string) bool { _, err := os.Stat(path); return err == nil }
 func TestHostName(t *testing.T) {
 	if name := hostName(); name == "" || strings.Contains(name, ".") {
 		t.Errorf("host name: %q", name)
+	}
+}
+
+// The settings file can be given on the command line or in a variable; a
+// folder means config.yaml in it, and the server's accounts go next to it.
+func TestConfigLocation(t *testing.T) {
+	setup(t, Config{})
+	dir := t.TempDir()
+	defer func() { configFile = "" }()
+
+	mustRun(t, "\n\n\n", "-config", dir, "-setup")
+	if !fileExists(filepath.Join(dir, "config.yaml")) {
+		t.Fatalf("-config with a folder: %s", configPath())
+	}
+	s, err := NewServer(ServerOptions{Roots: []Root{{Path: t.TempDir()}}, Name: "x", Port: 8200, Config: Config{}}, func(string, ...any) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.auth.SetUser("boss", "boss-password", true)
+	if !fileExists(filepath.Join(dir, "server.json")) {
+		t.Errorf("the accounts are not next to the settings")
+	}
+	s.dl.Close()
+
+	configFile = ""
+	file := filepath.Join(t.TempDir(), "other.yaml")
+	t.Setenv("MEDIAKEEPER_CONFIG", file)
+	if configPath() != file {
+		t.Errorf("MEDIAKEEPER_CONFIG: %s", configPath())
+	}
+	os.WriteFile(file, []byte("language: de-DE\n"), 0o600)
+	if cfg, _, err := loadConfig(); err != nil || cfg.Language != "de-DE" {
+		t.Errorf("read from MEDIAKEEPER_CONFIG: %+v %v", cfg, err)
+	}
+}
+
+// Settings kept in the user's configuration folder by earlier versions move
+// to the program's folder, together with the accounts.
+func TestConfigMovesToProgramFolder(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("MEDIAKEEPER_CONFIG", "")
+	old := legacyConfigDir()
+	os.MkdirAll(old, 0o700)
+	os.WriteFile(filepath.Join(old, "config.yaml"), []byte("language: ru-RU\n"), 0o600)
+	os.WriteFile(filepath.Join(old, "server.json"), []byte(`{"users":{}}`), 0o600)
+
+	app := t.TempDir()
+	appDirOnce.Do(func() {}) // a test binary has no folder to keep settings in: give it one
+	appDirPath = app
+	defer func() { appDirPath = "" }()
+
+	if got := configLocation(); got != filepath.Join(app, "config.yaml") || !fileExists(filepath.Join(old, "config.yaml")) {
+		t.Errorf("only telling where the settings are moved them: %s", got)
+	}
+	cfg, _, err := loadConfig()
+	if err != nil || cfg.Language != "ru-RU" {
+		t.Fatalf("after moving: %+v %v", cfg, err)
+	}
+	for _, name := range []string{"config.yaml", "server.json"} {
+		if !fileExists(filepath.Join(app, name)) || fileExists(filepath.Join(old, name)) {
+			t.Errorf("%s was not moved", name)
+		}
+		if st, _ := os.Stat(filepath.Join(app, name)); st != nil && st.Mode().Perm() != 0o600 {
+			t.Errorf("%s is readable by others: %v", name, st.Mode())
+		}
+	}
+	if fileExists(old) {
+		t.Errorf("the emptied old folder is still there")
+	}
+
+	// Settings already in the program's folder are never replaced.
+	os.MkdirAll(old, 0o700)
+	os.WriteFile(filepath.Join(old, "config.yaml"), []byte("language: en-US\n"), 0o600)
+	if cfg, _, _ := loadConfig(); cfg.Language != "ru-RU" || !fileExists(filepath.Join(old, "config.yaml")) {
+		t.Errorf("the program's own settings were replaced: %+v", cfg)
+	}
+
+	// Without a writable program folder, the old place is used.
+	appDirPath = ""
+	if got := configPath(); got != filepath.Join(old, "config.yaml") {
+		t.Errorf("fallback: %s", got)
 	}
 }

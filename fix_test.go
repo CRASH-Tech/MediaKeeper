@@ -5,8 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A title identified wrongly is given another identity from the web
@@ -215,5 +217,136 @@ func TestHLS(t *testing.T) {
 	}
 	if len(s.transcodes) != 0 {
 		t.Errorf("conversion slots still taken: %d", len(s.transcodes))
+	}
+}
+
+// Interlaced H.264 (broadcast, DVD, some Blu-rays) plays only as sound on
+// Apple devices and jerky in browsers: it is converted with deinterlacing,
+// while ordinary H.264 is still copied.
+func TestInterlacedIsConverted(t *testing.T) {
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe is not installed")
+	}
+	dir := t.TempDir()
+	video := func(name string, extra ...string) *CatItem {
+		path := filepath.Join(dir, name)
+		args := append([]string{"-v", "error", "-f", "lavfi", "-i", "testsrc=d=2:s=320x240:r=25", "-c:v", "libx264"}, extra...)
+		if out, err := exec.Command(ffmpeg, append(args, path)...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		st, _ := os.Stat(path)
+		return &CatItem{Path: path, Size: st.Size(), ModTime: st.ModTime()}
+	}
+	interlaced := video("interlaced.mkv", "-flags", "+ilme+ildct", "-top", "1")
+	progressive := video("progressive.mkv")
+
+	p := newProber()
+	s := &Server{lib: NewLibrary([]Root{{Path: dir}}, p)}
+	for _, c := range []struct {
+		it                  *CatItem
+		copied, deinterlace bool
+	}{{interlaced, false, true}, {progressive, true, false}} {
+		info := p.probe(c.it.Path)
+		p.known[probeJob{c.it.Path, c.it.Size, c.it.ModTime}.key()] = info
+		args, copied := s.convertArgs(c.it, 0, true)
+		joined := strings.Join(args, " ")
+		if copied != c.copied || strings.Contains(joined, "bwdif") != c.deinterlace {
+			t.Errorf("%s (field order %q): copied %v, args %s", filepath.Base(c.it.Path), info.stream("video").FieldOrder, copied, joined)
+		}
+	}
+}
+
+// Screenshots are taken in the background, shown to everyone and retaken by
+// an administrator.
+func TestScreenshots(t *testing.T) {
+	ffmpeg, err1 := exec.LookPath("ffmpeg")
+	ffprobe, err2 := exec.LookPath("ffprobe")
+	if err1 != nil || err2 != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	s, srv := serverFixture(t) // (it empties PATH)
+	s.ffmpeg, s.prober.tool = ffmpeg, ffprobe
+	clip := filepath.Join(s.root, "Clip (2020)", "Clip (2020).mkv")
+	os.MkdirAll(filepath.Dir(clip), 0o755)
+	if out, err := exec.Command(ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=d=60:s=320x240:r=10", "-c:v", "libx264", clip).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	os.MkdirAll(filepath.Join(s.screens.dir, "0123456789abcdef0123456789abcdef"), 0o755) // of a title that is gone
+	s.refresh()
+	go s.screens.run()
+	defer s.screens.close()
+
+	kid := newBrowser(t, srv, "kid")
+	var lib libraryView
+	kid.json("/api/library", &lib)
+	id := ""
+	for _, m := range lib.Movies {
+		if m.Title == "Clip" {
+			id = m.ID
+		}
+	}
+	type state struct {
+		State string
+		Shots []string
+	}
+	wait := func() state {
+		t.Helper()
+		var st state
+		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			kid.json("/api/screens/"+id, &st)
+			if st.State != "pending" {
+				return st
+			}
+		}
+		t.Fatalf("screenshots are still pending")
+		return st
+	}
+	st := wait()
+	if st.State != "ready" || len(st.Shots) != screenCount {
+		t.Fatalf("screenshots: %+v", st)
+	}
+	status, body := kid.get(st.Shots[0])
+	if status != 200 || !strings.HasPrefix(body, "\xff\xd8") { // a JPEG
+		t.Errorf("screenshot: %d, %d bytes", status, len(body))
+	}
+	if exists(filepath.Join(s.screens.dir, "0123456789abcdef0123456789abcdef")) {
+		t.Errorf("screenshots of a title that is gone were not removed")
+	}
+	var cat struct{ Movies []struct{ Title string } }
+	kid.json("/api/library", &cat)
+	for _, m := range cat.Movies {
+		if strings.Contains(m.Title, "01") {
+			t.Errorf("a screenshot was taken for a movie: %+v", cat.Movies)
+		}
+	}
+
+	// Only an administrator retakes them; the new set replaces the old.
+	if status, _ := kid.post("/api/screens/"+id+"/regenerate", nil); status != http.StatusForbidden {
+		t.Errorf("a viewer retakes screenshots: %d", status)
+	}
+	read := func() (all []string) {
+		for _, f := range s.screens.shots(id) {
+			data, _ := os.ReadFile(f)
+			all = append(all, string(data))
+		}
+		return all
+	}
+	before := read()
+	boss := newBrowser(t, srv, "boss")
+	if status, body := boss.post("/api/screens/"+id+"/regenerate", nil); status != 200 {
+		t.Fatalf("regenerate: %d %s", status, body)
+	}
+	if again := wait(); again.State != "ready" || len(again.Shots) != screenCount {
+		t.Fatalf("after regenerating: %+v", again)
+	}
+	if reflect.DeepEqual(before, read()) {
+		t.Errorf("the regenerated screenshots are the same frames")
+	}
+	if status, _ := kid.get("/api/screens/" + id + "/../../config.yaml"); status == 200 {
+		t.Errorf("a path outside the screenshots: %d", status)
 	}
 }

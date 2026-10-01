@@ -117,8 +117,8 @@ func firstFailure(out string) error {
 }
 
 // fixUnit prepares re-identifying a title of the library: an organizer over
-// the whole library, the unit made of the title's files, and the files
-// MediaKeeper generated for the current, wrong identity.
+// the library folder the title is in, the unit made of the title's files,
+// and the files MediaKeeper generated for the current, wrong identity.
 func (s *Server) fixUnit(id string, out *bytes.Buffer) (a *App, u *Unit, generated []string, err error) {
 	cat, err := s.lib.Catalog()
 	if err != nil {
@@ -128,10 +128,19 @@ func (s *Server) fixUnit(id string, out *bytes.Buffer) (a *App, u *Unit, generat
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	var anyFile string
+	if it := cat.items[id]; it != nil {
+		anyFile = it.Path
+	} else if show := cat.shows[id]; show != nil && len(show.Episodes()) > 0 {
+		anyFile = show.Episodes()[0].Path
+	} else {
+		return nil, nil, nil, errNotFound
+	}
+	r := s.rootFor(anyFile)
 	ui := NewUI(strings.NewReader(""), out)
-	a = &App{ui: ui, root: s.root, out: s.root, yes: true, refresh: true, noTags: s.noTags}
+	a = &App{ui: ui, root: r.Path, kind: r.Kind, out: r.Path, yes: true, refresh: true, noTags: s.noTags}
 	a.hub = NewHub(providers, func(name, reason string) { ui.Printf("(source %s is off: %s)\n", name, reason) })
-	if a.files, err = Scan(s.root); err != nil {
+	if a.files, err = scanRoot(r); err != nil {
 		return nil, nil, nil, err
 	}
 	byPath := map[string]*MediaFile{}
@@ -180,27 +189,39 @@ func (s *Server) fixUnit(id string, out *bytes.Buffer) (a *App, u *Unit, generat
 	return a, u, generated, nil
 }
 
+// fixOptions adjust a re-identification made from the edit form.
+type fixOptions struct {
+	keepArt bool         // the artwork stays as it is
+	edit    func(*Match) // hand-made changes to the catalogue's description
+}
+
 // fix re-identifies a title of the library as something else: its files are
 // renamed and moved as for a new title, and its .nfo and artwork replaced.
-// The run is journaled, so "mediakeeper -undo" puts the names back.
-func (s *Server) fix(id string, req resolveRequest) error {
+// The run is journaled, so "mediakeeper -undo" puts the names back. It
+// returns where the title is now: the series folder, or the movie's file.
+func (s *Server) fix(id string, req resolveRequest, opt fixOptions) (string, error) {
 	s.organizing.Lock()
 	defer s.organizing.Unlock()
 
 	var out bytes.Buffer
 	a, u, generated, err := s.fixUnit(id, &out)
 	if err != nil {
-		return err
+		return "", err
 	}
 	m, err := matchFor(a, u, req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	a.localize(m)
+	if opt.edit != nil {
+		opt.edit(m)
+	}
 	plan := &Plan{}
+	dst := ""
 	if m.Show != nil {
+		dst, _ = a.showPlace(u.Files, m.Show)
 		if err := a.AddShow(plan, u, m.Show); err != nil {
-			return err
+			return "", err
 		}
 	} else {
 		a.AddMovie(plan, u.Files[0], m.Movie)
@@ -209,19 +230,25 @@ func (s *Server) fix(id string, req resolveRequest) error {
 	for _, it := range plan.Items {
 		switch {
 		case it.Conflict != "":
-			return errors.New(it.Conflict)
+			return "", errors.New(it.Conflict)
 		case it.IsDir || it.Move.Src == "" || it.From == it.Move.Dst:
 		case exists(it.Move.Dst):
-			return fmt.Errorf("%s is already in the library", a.rel(s.root, it.Move.Dst))
+			return "", fmt.Errorf("%s is already in the library", a.rel(a.root, it.Move.Dst))
+		}
+		if dst == "" && !it.IsDir && it.Move.Dst != "" {
+			dst = it.Move.Dst
 		}
 	}
 	for _, path := range generated {
+		if opt.keepArt && strings.HasSuffix(path, ".jpg") && !strings.HasSuffix(path, "-thumb.jpg") {
+			continue
+		}
 		os.Remove(path)
 	}
 	a.Apply(plan)
 	s.refresh()
 	if err := firstFailure(out.String()); err != nil {
-		return err
+		return "", err
 	}
 	title := ""
 	if m.Show != nil {
@@ -230,7 +257,7 @@ func (s *Server) fix(id string, req resolveRequest) error {
 		title = withYear(m.Movie.Title, m.Movie.Year)
 	}
 	s.log("%q is now %s", u.Title, title)
-	return nil
+	return dst, nil
 }
 
 // fixAPI serves /api/fix/{id} for administrators.
@@ -247,7 +274,7 @@ func (s *Server) fixAPI(w http.ResponseWriter, r *http.Request, id, action strin
 	case action == "" && r.Method == http.MethodPost:
 		var req resolveRequest
 		if err = readJSON(r, &req); err == nil {
-			if err = s.fix(id, req); err == nil {
+			if _, err = s.fix(id, req, fixOptions{}); err == nil {
 				writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 				return
 			}

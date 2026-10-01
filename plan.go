@@ -131,10 +131,21 @@ func (a *App) library(files []*MediaFile) (base, own string) {
 
 // category returns the "Movies" or "Shows" folder for a title found in
 // base. A title already inside one of them is not nested deeper: it stays,
-// or goes to the sibling folder if it was filed under the wrong one.
+// or goes to the sibling folder if it was filed under the wrong one. A
+// library folder of a single kind has no such folders: the title stays in
+// base. New titles (-out, downloads) go to the library folder of their kind.
 func (a *App) category(base, name string) string {
+	if a.outSet { // the library folder for its kind
+		r := rootFor(a.outRoots, name)
+		if r.Kind != rootMixed {
+			return r.Path
+		}
+		return filepath.Join(r.Path, name)
+	}
+	if a.kind != rootMixed { // a folder of movies only, or series only, needs no Movies and Shows
+		return base
+	}
 	switch current := filepath.Base(base); {
-	case a.outSet:
 	case strings.EqualFold(current, name):
 		return base
 	case base != a.root && (strings.EqualFold(current, moviesFolder) || strings.EqualFold(current, showsFolder)):
@@ -206,8 +217,7 @@ func (a *App) AddMovie(p *Plan, orig *MediaFile, m *Movie) {
 func (a *App) AddShow(p *Plan, u *Unit, s *Show) error {
 	planned := len(p.Items)
 	showName := sanitize(s.Title)
-	base, own := a.library(u.Files)
-	showDir := filepath.Join(a.category(base, showsFolder), withYear(s.Title, s.Year))
+	showDir, own := a.showPlace(u.Files, s)
 	files := p.relocate(own, showDir, u.Files)
 
 	root := &Item{}
@@ -277,6 +287,13 @@ func (a *App) AddShow(p *Plan, u *Unit, s *Show) error {
 		p.add(it)
 	}
 	return nil
+}
+
+// showPlace is the folder a series is filed in, and the folder it has now
+// if that one holds nothing else.
+func (a *App) showPlace(files []*MediaFile, s *Show) (dir, own string) {
+	base, own := a.library(files)
+	return filepath.Join(a.category(base, showsFolder), withYear(s.Title, s.Year)), own
 }
 
 // season returns nil without an error when the source simply has no such

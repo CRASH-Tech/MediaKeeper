@@ -388,6 +388,7 @@ func setup(t *testing.T, cfg Config, names ...string) string {
 	srv := fakeServices(t)
 	fakeURL = srv.URL
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("MEDIAKEEPER_CONFIG", "") // not the settings of whoever runs the tests
 	for _, env := range []string{"TMDB_API_KEY", "KINOPOISK_API_KEY", "OMDB_API_KEY"} {
 		t.Setenv(env, "")
 	}

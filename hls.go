@@ -350,11 +350,23 @@ var reTargetDuration = regexp.MustCompile(`#EXT-X-TARGETDURATION:\d+`)
 func (s *Server) convertArgs(it *CatItem, audio int, hls bool) (args []string, copied bool) {
 	info := s.lib.Probe(it)
 	args = []string{"-map", "0:v:0", "-map", fmt.Sprintf("0:a:%d?", max(audio, 0)), "-sn", "-dn", "-map_chapters", "-1"}
-	if v := info.stream("video"); v != nil && v.Codec == "h264" && !strings.Contains(v.Profile, "10") {
+	v := info.stream("video")
+	if v != nil && v.Codec == "h264" && !strings.Contains(v.Profile, "10") && !v.Interlaced() {
 		args, copied = append(args, "-c:v", "copy"), true
 	} else {
-		args = append(args, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-			"-vf", "scale='min(1920,iw)':-2")
+		filters := "scale='min(1920,iw)':-2"
+		if v != nil && v.Interlaced() {
+			// One frame per pair of fields, at a steady rate: such files
+			// often carry uneven time stamps as well.
+			filters = "bwdif=mode=send_frame," + filters
+			if rate := v.FieldRate; rate > 0 {
+				if rate > 31 {
+					rate /= 2
+				}
+				args = append(args, "-r", strconv.FormatFloat(rate, 'f', 3, 64))
+			}
+		}
+		args = append(args, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-vf", filters)
 		if hls {
 			args = append(args, "-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", hlsSegmentSeconds))
 		}

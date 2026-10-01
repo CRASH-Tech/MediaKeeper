@@ -23,7 +23,7 @@ func serverFixture(t *testing.T) (*Server, *httptest.Server) {
 	setup(t, Config{TMDBKey: "tmdbkey", Language: "ru-RU"})
 	root := dlnaLibraryFiles(t)
 	cfg, _, _ := loadConfig()
-	s, err := NewServer(ServerOptions{Root: root, Name: "Test", Port: 8200, DLNA: true, NoTags: true, Config: cfg},
+	s, err := NewServer(ServerOptions{Roots: []Root{{Path: root}}, Name: "Test", Port: 8200, DLNA: true, NoTags: true, Config: cfg},
 		func(string, ...any) {})
 	if err != nil {
 		t.Fatal(err)
@@ -59,12 +59,15 @@ func newBrowser(t *testing.T, srv *httptest.Server, user string) *browser {
 func (b *browser) do(method, path string, body any, header map[string]string) (int, string) {
 	b.t.Helper()
 	var reader io.Reader
-	if body != nil {
+	contentType := "application/json"
+	if raw, ok := body.(*rawBody); ok {
+		reader, contentType = bytes.NewReader(raw.data), raw.contentType
+	} else if body != nil {
 		data, _ := json.Marshal(body)
 		reader = bytes.NewReader(data)
 	}
 	req, _ := http.NewRequest(method, b.base+path, reader)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	for k, v := range header {
 		req.Header.Set(k, v)
 	}
@@ -616,4 +619,19 @@ func cookieRequest(b *browser) *http.Request {
 		req.AddCookie(c)
 	}
 	return req
+}
+
+// Browsers ask for an icon at fixed addresses, without signing in.
+func TestIcons(t *testing.T) {
+	_, srv := serverFixture(t)
+	for _, path := range []string{"/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/favicon.ico", "/static/icon.svg"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "image/") {
+			t.Errorf("%s: %d %s", path, resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+	}
 }

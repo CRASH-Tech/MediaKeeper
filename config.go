@@ -9,12 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Config is the settings file, config.yaml in the user's configuration
-// directory (~/.config/mediakeeper, /config/mediakeeper in Docker). Every
+// Config is the settings file: config.yaml in the program's own folder, or
+// the file given with -config or MEDIAKEEPER_CONFIG (see configPath). Every
 // field is optional; command-line flags win over it.
 type Config struct {
 	TMDBKey      string       `yaml:"tmdb_api_key,omitempty" json:"tmdb_api_key,omitempty"`
@@ -24,6 +25,7 @@ type Config struct {
 	Sources      []string     `yaml:"sources,omitempty" json:"sources,omitempty"` // order of priority
 	TMDBURL      string       `yaml:"tmdb_api_url,omitempty" json:"tmdb_api_url,omitempty"`
 	TMDBImageURL string       `yaml:"tmdb_image_url,omitempty" json:"tmdb_image_url,omitempty"`
+	Libraries    []Root       `yaml:"libraries,omitempty" json:"-"` // used when no folder is given on the command line
 	Server       ServerConfig `yaml:"server,omitempty" json:"-"`
 }
 
@@ -36,7 +38,73 @@ type ServerConfig struct {
 	NoTags bool   `yaml:"no_tags,omitempty"`
 }
 
-func configDir() string {
+// Where the settings live, in this order:
+//
+//  1. the file given with -config, or in MEDIAKEEPER_CONFIG (a folder means
+//     config.yaml in it);
+//  2. config.yaml in the folder of the program;
+//  3. where the program cannot keep it — a folder it may not write to, like
+//     /usr/local/bin, or the temporary build of "go run" — config.yaml in
+//     the user's configuration folder (~/.config/mediakeeper), where every
+//     version before kept it.
+//
+// The accounts and the watch progress of the server (server.json) are kept
+// next to it. Settings found in the old place are moved to the program's
+// folder the first time.
+
+var configFile string // set by useConfig
+
+// useConfig makes path the settings file: -config.
+func useConfig(path string) error {
+	abs, err := filepath.Abs(expandHome(path))
+	if err != nil {
+		return err
+	}
+	if st, err := os.Stat(abs); err == nil && st.IsDir() {
+		abs = filepath.Join(abs, "config.yaml")
+	}
+	configFile = abs
+	return nil
+}
+
+func configPath() string {
+	return findConfig(true)
+}
+
+// configLocation is where the settings are or will be, without moving
+// anything: for messages.
+func configLocation() string {
+	return findConfig(false)
+}
+
+func findConfig(move bool) string {
+	if configFile != "" {
+		return configFile
+	}
+	if env := os.Getenv("MEDIAKEEPER_CONFIG"); env != "" {
+		if err := useConfig(env); err == nil {
+			return configFile
+		}
+	}
+	legacy := filepath.Join(legacyConfigDir(), "config.yaml")
+	app := appDir()
+	if app == "" {
+		return legacy
+	}
+	own := filepath.Join(app, "config.yaml")
+	if move && !exists(own) && legacyConfigDir() != "" {
+		if moved, err := moveConfig(legacyConfigDir(), app); err != nil {
+			fmt.Fprintf(os.Stderr, "mediakeeper: the settings stay in %s: %v\n", legacyConfigDir(), err)
+			return legacy
+		} else if len(moved) > 0 {
+			fmt.Fprintf(os.Stderr, "mediakeeper: moved %s from %s to %s\n", strings.Join(moved, ", "), legacyConfigDir(), app)
+		}
+	}
+	return own
+}
+
+// legacyConfigDir is the user's configuration folder for MediaKeeper.
+func legacyConfigDir() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return ""
@@ -44,11 +112,73 @@ func configDir() string {
 	return filepath.Join(dir, "mediakeeper")
 }
 
-func configPath() string {
-	if dir := configDir(); dir != "" {
-		return filepath.Join(dir, "config.yaml")
+var (
+	appDirOnce sync.Once
+	appDirPath string
+)
+
+// appDir is the folder of the program, if the settings can be kept there.
+func appDir() string {
+	appDirOnce.Do(func() {
+		exe, err := os.Executable()
+		if err != nil {
+			return
+		}
+		if real, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = real
+		}
+		dir := filepath.Dir(exe)
+		tmp, _ := filepath.EvalSymlinks(os.TempDir())
+		if strings.Contains(dir, "go-build") || within(os.TempDir(), dir) || (tmp != "" && within(tmp, dir)) {
+			return // a build of "go run" or "go test", gone after the run
+		}
+		if f, err := os.CreateTemp(dir, ".mediakeeper-*"); err == nil {
+			f.Close()
+			os.Remove(f.Name())
+			appDirPath = dir
+		}
+	})
+	return appDirPath
+}
+
+// moveConfig moves the settings and the server's accounts from one folder
+// to another: all of them or, if anything fails, none.
+func moveConfig(from, to string) (moved []string, err error) {
+	var names []string
+	for _, name := range []string{"config.yaml", "config.json", "server.json"} {
+		if exists(filepath.Join(from, name)) && !exists(filepath.Join(to, name)) {
+			names = append(names, name)
+		}
 	}
-	return ""
+	if len(names) == 0 || !exists(filepath.Join(from, "config.yaml")) && !exists(filepath.Join(from, "config.json")) {
+		return nil, nil // nothing to move, or only an orphaned server.json
+	}
+	for i, name := range names { // copied first: a disk of its own is fine too
+		if err := copyPrivate(filepath.Join(from, name), filepath.Join(to, name)); err != nil {
+			for _, done := range names[:i] {
+				os.Remove(filepath.Join(to, done))
+			}
+			return nil, err
+		}
+	}
+	for _, name := range names {
+		os.Remove(filepath.Join(from, name))
+	}
+	os.Remove(from) // only if it is empty now
+	return names, nil
+}
+
+// copyPrivate copies a file readable only by its owner: it holds keys.
+func copyPrivate(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
 
 // loadConfig reads config.yaml. A config.json of an earlier version is
@@ -125,6 +255,22 @@ func saveConfig(c Config) error {
 		"tmdb_api_url", c.TMDBURL, c.TMDBURL != "", "https://api.themoviedb.org/3")
 	line("Where TMDB images are downloaded from.",
 		"tmdb_image_url", c.TMDBImageURL, c.TMDBImageURL != "", "https://image.tmdb.org/t/p/original")
+
+	b.WriteString("\n# The folders of the library, used when none is given on the command line.\n" +
+		"# kind: movies or shows; left out, a folder holds both, sorted into Movies\n" +
+		"# and Shows inside. A plain path is a folder of both.\n")
+	if len(c.Libraries) > 0 {
+		b.WriteString("libraries:\n")
+		for _, r := range c.Libraries {
+			fmt.Fprintf(&b, "  - path: %s\n", yamlValue(r.Path))
+			if r.Kind != rootMixed {
+				fmt.Fprintf(&b, "    kind: %s\n", r.Kind)
+			}
+		}
+	} else {
+		b.WriteString("# libraries:\n#   - path: /srv/movies\n#     kind: movies\n#   - path: /mnt/disk2/films\n#     kind: movies\n" +
+			"#   - path: /srv/series\n#     kind: shows\n#   - /srv/media\n")
+	}
 
 	b.WriteString("\n# The media server (mediakeeper -serve).\nserver:\n")
 	sub := func(comment, key string, value any, set bool, example string) {
