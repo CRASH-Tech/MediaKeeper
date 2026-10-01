@@ -27,7 +27,8 @@ type CatItem struct {
 	Year                             int
 	Date, Plot, Tagline, MPAA        string
 	Rating                           float64
-	Runtime                          int // minutes, from the .nfo
+	Runtime                          int    // minutes, from the .nfo
+	Collection                       string // the film series it belongs to
 	Genres, Countries, Studios       []string
 	Directors, Writers               []string
 	Cast                             []Person
@@ -141,6 +142,7 @@ func (cat *Catalog) add(r Root, key string) error {
 		if info != nil {
 			isEpisode = info.XMLName.Local == "episodedetails"
 			it.Plot, it.Tagline, it.MPAA, it.Genres = info.Plot, info.Tagline, info.MPAA, info.Genres
+			it.Collection = info.collection()
 			it.Rating, it.Runtime, it.Date = info.Rating, info.Runtime, info.Premiered+info.Aired
 			it.OriginalTitle, it.LocalTitle = info.Original, info.Localized
 			it.Countries, it.Studios, it.Directors, it.Writers, it.Cast = info.Countries, info.Studios, info.Directors, info.Writers, info.cast()

@@ -245,7 +245,16 @@ reverse proxy with TLS.
 
 Open the address printed at start. **Movies** and **Shows** are the catalogue;
 the lists above it narrow it down by genre, year, country, actor, director,
-writer or studio, and put it in another order.
+writer, studio, collection or your own marks, and put it in another order:
+by title, **oldest first** or newest first (by the release date, so a film
+series can be watched in order), recently added, best rated or by your
+rating. The search in the header narrows the posters further and stays while
+the list is sorted or filtered anew, and after a visit to a title.
+
+A movie's **collection** — the film series it belongs to, like *Pirates of the
+Caribbean Collection* — comes from TMDB or is set by hand in the edit sheet;
+the collection's page lists its parts in the order they came out. Pages of
+an actor, director or genre can be sorted the same way.
 
 A title page shows the description in groups — plot, genres, director,
 writers, cast, studio, country — and every value is a link: click an actor or
@@ -282,6 +291,41 @@ key brings them back. A seek ends the viewer's previous
 conversion at once, so it never counts against the limit of two.
 Progress is remembered per user, and a series continues with the next
 episode.
+
+**Subtitles** are chosen in the player's top bar, like the audio track:
+text tracks inside the file (SubRip, ASS) and `.srt` files next to it are
+shown by the browser over any stream — the server takes the tracks out of
+the file once and keeps them in the cache. Picture subtitles (Blu-ray PGS,
+DVD) cannot be drawn by browsers: choosing one switches to a converted
+stream with the subtitles burned into the picture. The player remembers the
+language chosen and picks it again for the next video that has it as text.
+
+#### Hardware conversion
+
+Converting HEVC, 10-bit, interlaced or old formats is the heaviest work the
+server does. With `hwaccel` it is done on a graphics card:
+
+| Value | Card |
+|---|---|
+| `none` (default) | the processor (libx264) |
+| `auto` | the first of the below that works |
+| `vaapi` (or `vaapi:/dev/dri/renderD129`) | Intel or AMD, through VA-API |
+| `qsv` | Intel Quick Sync |
+| `nvenc` | NVIDIA (needs an ffmpeg built with NVENC) |
+
+Set it in the settings file (`server.hwaccel`), with `-hwaccel` or with
+`MEDIAKEEPER_HWACCEL`. At the start the server converts a second of a test
+picture on the card; only if that works is the card used, and the log says
+which. Decoding, deinterlacing, scaling and encoding all stay on the card; a
+file the card fails on is converted on the processor from then on. Copied
+H.264 needs no conversion at all, card or not.
+
+The Docker image contains the Intel drivers (x86-64). Pass the card to the
+container (`devices: ["/dev/dri:/dev/dri"]` and the host's `render` group,
+see [docker-compose.yaml](docker-compose.yaml)). For AMD build the image with
+`--build-arg EXTRA_PACKAGES=mesa-va-gallium`; Alpine's ffmpeg has no NVENC, so
+for NVIDIA run the binary on the host with an ffmpeg that has it. In a
+virtual machine the card has to be passed through to it.
 
 A movie's page shows eight screenshots, taken by `ffmpeg` in the
 background between 10% and 90% of the film (so not the logos or the
@@ -369,11 +413,16 @@ the catalogues.
 Add the server's address (`http://host:8200`) in the app and sign in with a
 MediaKeeper user. What is implemented: sign-in, the Movies and Shows
 libraries, search, series/seasons/episodes, artwork, direct play with
-seeking or converted playback (HLS) for players that need it, external `.srt`
-subtitles, watched state, resume and "next up".
+seeking or converted playback (HLS) for players that need it, subtitles,
+watched state, resume and "next up".
 
 What to expect:
 
+- **Subtitles.** Text tracks inside the file and `.srt` files next to it are
+  also offered as files of their own (players of a converted stream need
+  them that way). Picture subtitles (PGS) that the app's player cannot draw
+  itself — its device profile says `Encode`, like the Apple TV's own player —
+  are burned into a converted stream when chosen.
 - **Played as it is, or converted.** An app tells the server which
   containers and codecs its player takes (its device profile). A file it
   takes is sent as it is; any other — Matroska for the Apple TV's own player,
@@ -529,6 +578,7 @@ current directory.
 | `-lang CODE`    | Language of TMDB titles and descriptions, e.g. `ru-RU` (default `en-US`) |
 | `-setup`        | Enter API keys and exit                                                 |
 | `-debug`        | With `-serve`: log every request of the Jellyfin apps, and in full (device profiles, answers, video ranges; no tokens) in `jellyfin-debug.log` next to the settings |
+| `-hwaccel WAY`  | With `-serve`: convert video on a graphics card: `auto`, `vaapi`, `qsv`, `nvenc` or `none` (default) |
 | `-cache DIR`    | With `-serve`: the folder of screenshots and episode stills (default: `.cache` in the first library folder) |
 | `-db FILE`      | With `-serve`: the database of accounts, ratings, watchlists and history (default: `mediakeeper.db` next to the settings) |
 | `-config FILE`  | The settings file, or a folder for `config.yaml` in it (default: next to the program) |
@@ -579,6 +629,7 @@ server:              # mediakeeper -serve
   dlna: true         # DLNA has no login: the whole local network can watch
   guests: true       # the web interface can be watched without signing in
   no_tags: false     # do not write tags into the files of downloads
+  hwaccel: auto      # convert on a graphics card: auto, vaapi, qsv, nvenc, none (default)
   database: /var/lib/mediakeeper/mediakeeper.db   # mediakeeper.db next to this file by default
   cache: /var/cache/mediakeeper                    # .cache in the first library folder by default
 ```

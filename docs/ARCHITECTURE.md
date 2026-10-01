@@ -149,9 +149,13 @@ history with statistics, rated, favourites).
 | Jellyfin app, other files | whole-film HLS | `TranscodingUrl` → `/Videos/{id}/master.m3u8` → `vod.go` |
 | DLNA renderer | the original | `/media/…` with Range |
 
-`convertArgs` is shared: H.264 (not 10-bit, not interlaced) is copied, other
-video is re-encoded with libx264 (bwdif for interlaced), audio becomes stereo
-AAC. At most two conversions run at once (`Server.transcodes`); a viewer's
+`convertArgs` (`convert.go`) is shared: H.264 (not 10-bit, not interlaced)
+is copied, other video is re-encoded — with libx264 (bwdif for interlaced),
+or on a graphics card when `hwaccel` is set and a test conversion worked at
+start (VAAPI, Quick Sync or NVENC, frames kept on the card; a file the card
+fails on goes to the processor) — and audio becomes stereo AAC. Picture
+subtitles chosen by the viewer are burned in with an `overlay` filter, which
+rules out copying. At most two conversions run at once (`Server.transcodes`); a viewer's
 new stream ends their previous one (`viewerStreams`), and a slot is waited
 for up to 10 s.
 
@@ -209,6 +213,16 @@ with confidence waits on the Downloads page ("Needs you"). An
 administrator can say what a download is while it is still running
 (a preset). Finished downloads remember where their files went and follow
 later renames.
+
+### Subtitles (`subtitles.go`)
+
+`subtitleTracks` lists a video's text tracks, picture tracks and `.srt` files
+next to it, with language names. Text tracks inside the file are taken out by
+one ffmpeg run per file (all of them at once — it reads the whole file) into
+`<cache>/subtitles/<file hash>/<stream>.srt` and served as WebVTT, shifted by
+the start of a converted stream. The Jellyfin API offers them as external
+files too, and burns picture tracks into its HLS when the app's device
+profile asks for `Encode`.
 
 ### Screenshots and stills (`screens.go`)
 

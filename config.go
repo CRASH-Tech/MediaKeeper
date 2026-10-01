@@ -34,6 +34,7 @@ type ServerConfig struct {
 	Name     string `yaml:"name,omitempty"`
 	Database string `yaml:"database,omitempty"` // the SQLite file of accounts and watch states
 	Cache    string `yaml:"cache,omitempty"`    // the folder of screenshots and episode stills
+	HWAccel  string `yaml:"hwaccel,omitempty"`  // a graphics card for conversions
 	Port     int    `yaml:"port,omitempty"`
 	DLNA     *bool  `yaml:"dlna,omitempty"`
 	Guests   *bool  `yaml:"guests,omitempty"`
@@ -341,6 +342,11 @@ func saveConfig(c Config) error {
 	sub("The folder of screenshots and episode stills; .cache in the first library folder by default.\n"+
 		"  # Also -cache, MEDIAKEEPER_CACHE. Moving it is harmless: the images are taken again.",
 		"cache", s.Cache, s.Cache != "", "/var/cache/mediakeeper")
+	sub("Convert video on a graphics card: auto, vaapi (Intel, AMD), qsv (Intel Quick Sync), nvenc (NVIDIA)\n"+
+		"  # or none (the processor; the default). vaapi and qsv may name the device: vaapi:/dev/dri/renderD129.\n"+
+		"  # A card is used only when a test conversion works; a file it fails on goes to the processor.\n"+
+		"  # Also -hwaccel, MEDIAKEEPER_HWACCEL.",
+		"hwaccel", s.HWAccel, s.HWAccel != "", "auto")
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

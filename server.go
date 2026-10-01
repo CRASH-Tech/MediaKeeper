@@ -27,9 +27,12 @@ var webFiles embed.FS
 // API, the Jellyfin-compatible API for native clients, and (unless switched
 // off) the DLNA media server.
 type Server struct {
-	roots    []Root // the folders of the library
-	root     string // the first of them, which also holds the downloads
-	cacheDir string // generated images: screenshots, episode stills
+	roots    []Root     // the folders of the library
+	root     string     // the first of them, which also holds the downloads
+	cacheDir string     // generated images: screenshots, episode stills
+	hw       *hwAccel   // the graphics card that converts, nil for the processor
+	hwBad    hwFailures // files the card could not convert
+	subs     subtitleCache
 	name     string
 	port     int
 	cfg      Config
@@ -62,6 +65,7 @@ type ServerOptions struct {
 	Roots    []Root
 	Database string // the SQLite file of accounts and watch states; "" for the default
 	Cache    string // the folder of generated images; "" for .cache in the first folder
+	HWAccel  string // a graphics card for conversions: auto, vaapi, qsv, nvenc; "" for none
 	Name     string
 	Port     int
 	DLNA     bool
@@ -88,6 +92,7 @@ func NewServer(o ServerOptions, log func(string, ...any)) (*Server, error) {
 		s.cacheDir = filepath.Join(o.Roots[0].Path, ".cache")
 	}
 	s.ffmpeg, _ = exec.LookPath("ffmpeg")
+	s.hw = detectHW(s.ffmpeg, o.HWAccel, log)
 	if o.Debug {
 		if s.debug, err = openDebugLog(); err != nil {
 			return nil, err

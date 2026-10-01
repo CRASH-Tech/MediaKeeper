@@ -256,8 +256,8 @@ func TestInterlacedIsConverted(t *testing.T) {
 	}{{interlaced, false, true}, {progressive, true, false}} {
 		info := p.probe(c.it.Path)
 		p.known[probeJob{c.it.Path, c.it.Size, c.it.ModTime}.key()] = info
-		args, copied := s.convertArgs(c.it, 0, true)
-		joined := strings.Join(args, " ")
+		conv := s.convertArgs(c.it, convertOptions{hls: true, burn: -1})
+		copied, joined := conv.copied, strings.Join(conv.output, " ")
 		if copied != c.copied || strings.Contains(joined, "bwdif") != c.deinterlace {
 			t.Errorf("%s (field order %q): copied %v, args %s", filepath.Base(c.it.Path), info.stream("video").FieldOrder, copied, joined)
 		}

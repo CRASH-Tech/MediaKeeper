@@ -84,7 +84,7 @@ async function render() {
     case "shows": return backAtTitle(renderList("shows", library.shows.map(asShow), query));
     case "movie": return renderMovie(arg);
     case "show": return renderShow(arg);
-    case "browse": return backAtTitle(renderBrowse(arg, decodeURIComponent(rest.join("/"))));
+    case "browse": return backAtTitle(renderBrowse(arg, decodeURIComponent(rest.join("/")), query));
     case "downloads": return me.admin ? renderDownloads() : (location.hash = "#movies");
     case "users": return me.admin ? renderUsers() : (location.hash = "#movies");
     case "mine": return me.guest ? (location.hash = "#login") : renderMine(arg || "continue");
@@ -117,8 +117,28 @@ function setAmbient(url) {
   document.body.classList.toggle("has-ambient", !!url);
 }
 
+// The search narrows the posters on the page. It stays while the list is
+// sorted or filtered anew, and after a visit to a title; choosing a section
+// in the header clears it.
+let searchTerm = "";
+function applySearch() {
+  const term = searchTerm.trim().toLowerCase();
+  let shown = 0;
+  for (const card of document.querySelectorAll("main .card")) {
+    const hide = !!term && !card.dataset.text.includes(term);
+    card.classList.toggle("hidden", hide);
+    if (!hide) shown++;
+  }
+  const grid = document.querySelector("main .grid");
+  let note = document.querySelector("main .search-empty");
+  if (grid && !shown && term) {
+    if (!note) grid.after(note = h("div", { class: "empty search-empty" }));
+    note.textContent = `Nothing here matches “${searchTerm.trim()}”.`;
+  } else if (note) note.remove();
+}
+
 function shell(page, ...content) {
-  const link = (id, label, extra) => h("a", { href: "#" + id, class: page === id ? "active" : "", onclick: () => { freshVisit = true; } },
+  const link = (id, label, extra) => h("a", { href: "#" + id, class: page === id ? "active" : "", onclick: () => { freshVisit = true; searchTerm = ""; } },
     icon(id), h("span", { class: "label" }, label), extra);
   setAmbient(pendingAmbient);
   pendingAmbient = null;
@@ -129,12 +149,8 @@ function shell(page, ...content) {
     me.admin && link("downloads", "Downloads", h("span", { class: "badge hidden attention" })),
     me.admin && link("users", "Users"));
   const search = h("input", {
-    type: "search", placeholder: "Search", "aria-label": "Search",
-    oninput: () => {
-      const term = search.value.trim().toLowerCase();
-      for (const card of document.querySelectorAll(".card"))
-        card.classList.toggle("hidden", !!term && !card.dataset.text.includes(term));
-    },
+    type: "search", placeholder: "Search", "aria-label": "Search", value: searchTerm,
+    oninput: () => { searchTerm = search.value; applySearch(); },
   });
   app.replaceChildren(
     h("header", { class: "glass" },
@@ -148,6 +164,7 @@ function shell(page, ...content) {
     h("main", {}, ...content),
     sections("tabbar glass"));
   if (!document.querySelector("main .grid")) search.remove(); // it filters the posters of a list
+  else applySearch();
   window.scrollTo(0, 0);
   if (me.admin) refreshBadge();
 }
@@ -219,7 +236,7 @@ function grid(items, emptyText) {
       h("div", { class: "title" }, x.title),
       h("div", { class: "sub" }, [!sameText(x.localTitle, x.title) && x.localTitle, x.year || null, isShow(x) && "series",
         x.myRating && "★ " + starText(x.myRating)].filter(Boolean).join(" · ")));
-    card.dataset.text = `${x.title} ${x.localTitle || ""} ${x.originalTitle || ""} ${x.year || ""}`.toLowerCase();
+    card.dataset.text = `${x.title} ${x.localTitle || ""} ${x.originalTitle || ""} ${x.year || ""} ${x.collection || ""}`.toLowerCase();
     card.dataset.id = x.id;
     return card;
   }));
@@ -263,14 +280,7 @@ function renderList(page, items, query) {
   const chosen = Object.keys(facets).filter(f => params.get(f));
   const shown = items.filter(x => chosen.every(f => (facets[f].values(x) || []).some(v => sameText(v, params.get(f)))));
   const order = params.get("sort") || "title";
-  const sorters = {
-    title: (a, b) => a.title.localeCompare(b.title),
-    year: (a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title),
-    added: (a, b) => (b.added || 0) - (a.added || 0),
-    rating: (a, b) => (b.rating || 0) - (a.rating || 0),
-    mine: (a, b) => (b.myRating || 0) - (a.myRating || 0) || a.title.localeCompare(b.title),
-  };
-  shown.sort(sorters[order] || sorters.title);
+  sortTitles(shown, order);
 
   const go = (key, value) => {
     const next = new URLSearchParams(params);
@@ -289,12 +299,32 @@ function renderList(page, items, query) {
       values.map(v => h("option", { value: v, selected: sameText(v, params.get(key)) }, `${v} (${counts.get(v)})`)));
     return select;
   });
-  const sort = h("select", { "aria-label": "Order", class: "sort", onchange: () => go("sort", sort.value === "title" ? "" : sort.value) },
-    [["title", "By title"], ["year", "Newest first"], ["added", "Recently added"], ["rating", "Best rated"], !me.guest && ["mine", "My rating"]].filter(Boolean)
-      .map(([v, label]) => h("option", { value: v, selected: v === order }, label)));
+  const sort = sortSelect(order, value => go("sort", value === "title" ? "" : value));
   shell(page,
     items.length > 0 && filterBar(selects, sort, chosen.length, "#" + page),
     grid(shown, chosen.length ? "No titles match all of these." : undefined));
+}
+
+// The orders of a list. Release dates are compared in full, so that two
+// films of one year still come in the order they came out — a film series
+// watched from the start.
+const releaseKey = x => x.date || (x.year ? `${x.year}-99` : "");
+const byTitle = (a, b) => a.title.localeCompare(b.title);
+const sorters = {
+  title: byTitle,
+  oldest: (a, b) => (releaseKey(a) || "9999").localeCompare(releaseKey(b) || "9999") || byTitle(a, b),
+  year: (a, b) => releaseKey(b).localeCompare(releaseKey(a)) || byTitle(a, b),
+  added: (a, b) => (b.added || 0) - (a.added || 0),
+  rating: (a, b) => (b.rating || 0) - (a.rating || 0) || byTitle(a, b),
+  mine: (a, b) => (b.myRating || 0) - (a.myRating || 0) || byTitle(a, b),
+};
+const sortTitles = (items, order) => items.sort(sorters[order] || sorters.title);
+function sortSelect(order, change) {
+  const select = h("select", { "aria-label": "Order", class: "sort", onchange: () => change(select.value) },
+    [["title", "By title"], ["oldest", "Oldest first"], ["year", "Newest first"], ["added", "Recently added"],
+      ["rating", "Best rated"], !me.guest && ["mine", "My rating"]].filter(Boolean)
+      .map(([v, label]) => h("option", { value: v, selected: v === order }, label)));
+  return select;
 }
 
 // filterBar lays out the filters. On a wide screen they stand in one row;
@@ -323,6 +353,7 @@ const facets = {
   director: { label: "Director", plural: "All directors", values: x => x.directors },
   writer: { label: "Writer", plural: "All writers", values: x => x.writers },
   studio: { label: "Studio", plural: "All studios", values: x => x.studios },
+  collection: { label: "Collection", plural: "All collections", values: x => x.collection ? [x.collection] : [] },
   mine: { label: "Mine", plural: "Mine: everything", values: x => mineTags(x) },
 };
 
@@ -338,15 +369,21 @@ function mineTags(x) {
 const browseLink = (facet, value) => `#browse/${facet}/${encodeURIComponent(value)}`;
 const chip = (facet, value, note) => h("a", { class: "chip", href: browseLink(facet, value) }, value, note && h("span", { class: "note" }, note));
 
-function renderBrowse(facet, value) {
+function renderBrowse(facet, value, query) {
   const f = facets[facet];
   if (!f) return (location.hash = "#movies");
   const all = [...library.movies, ...library.shows.map(asShow)];
   const found = all.filter(x => (f.values(x) || []).some(v => sameText(v, value)));
+  // A film series reads best in the order it came out; anything else by title.
+  const order = new URLSearchParams(query || "").get("sort") || (facet === "collection" ? "oldest" : "title");
+  sortTitles(found, order);
+  const here = location.hash.split("?")[0];
   shell("browse",
     h("p", { class: "crumbs" }, h("a", { href: "#movies" }, "Library"), " › ", f.label),
     h("h1", {}, value),
-    h("p", { class: "dim" }, `${found.length} title(s) in the library`),
+    h("div", { class: "browse-bar" },
+      h("p", { class: "dim" }, `${found.length} title(s) in the library`),
+      found.length > 1 && sortSelect(order, v => { location.hash = here + "?sort=" + v; })),
     grid(found, "Nothing in the library matches any more."));
 }
 
@@ -369,6 +406,7 @@ function details(x, extraFacts) {
   ].filter(Boolean);
   return [
     section("Plot", x.plot && h("p", { class: "plot" }, x.plot)),
+    section("Collection", x.collection && chips("collection", [x.collection])),
     section("Genres", chips("genre", x.genres)),
     section("Directed by", chips("director", x.directors)),
     section("Written by", chips("writer", x.writers)),
@@ -873,6 +911,7 @@ function openEdit(x, opts = {}) {
         status: text(m.status, { placeholder: "Continuing, Ended" }),
         mpaa: text(m.mpaa, { placeholder: "PG-13" }), rating: text(m.rating || "", { inputMode: "decimal", placeholder: "0–10" }),
         tagline: text(m.tagline), plot: h("textarea", { rows: 5, value: m.plot || "" }),
+        collection: text(m.collection, { placeholder: "Pirates of the Caribbean Collection" }),
         genres: text(listText(m.genres)), directors: text(listText(m.directors)), writers: text(listText(m.writers)),
         studios: text(listText(m.studios)), countries: text(listText(m.countries)),
         cast: h("textarea", { rows: 6, value: castText(m.cast), placeholder: "Robert Downey Jr. — Tony Stark" }),
@@ -893,7 +932,7 @@ function openEdit(x, opts = {}) {
         f.title.value = m.title || ""; f.originalTitle.value = m.originalTitle || ""; f.localTitle.value = m.localTitle || "";
         f.year.value = m.year || ""; f.released.value = m.released || ""; f.status.value = m.status || "";
         f.mpaa.value = m.mpaa || ""; f.rating.value = m.rating || "";
-        f.tagline.value = m.tagline || ""; f.plot.value = m.plot || "";
+        f.tagline.value = m.tagline || ""; f.plot.value = m.plot || ""; f.collection.value = m.collection || "";
         f.genres.value = listText(m.genres); f.directors.value = listText(m.directors); f.writers.value = listText(m.writers);
         f.studios.value = listText(m.studios); f.countries.value = listText(m.countries); f.cast.value = castText(m.cast);
         photos = Object.fromEntries((m.cast || []).filter(p => p.thumb).map(p => [p.name, p.thumb]));
@@ -939,7 +978,7 @@ function openEdit(x, opts = {}) {
                 plot: f.plot.value, genres: textList(f.genres.value), studios: textList(f.studios.value), cast,
                 ...(movie ? {
                   tagline: f.tagline.value, directors: textList(f.directors.value), writers: textList(f.writers.value),
-                  countries: textList(f.countries.value),
+                  countries: textList(f.countries.value), collection: f.collection.value.trim(),
                 } : { status: f.status.value }),
                 rename: rename.checked && (movie || !!source),
                 ...(source ? {
@@ -964,6 +1003,7 @@ function openEdit(x, opts = {}) {
             field("Year", f.year), field(movie ? "Released" : "First aired", f.released), !movie && field("Status", f.status),
             field("Age rating", f.mpaa), field("Rating", f.rating)),
           movie && field("Tagline", f.tagline), field("Plot", f.plot),
+          movie && field("Collection — the film series, to find and watch its parts in order", f.collection),
           h("div", { class: "fields" },
             field("Genres", f.genres), movie && field("Directed by", f.directors), movie && field("Written by", f.writers),
             field("Studios", f.studios), movie && field("Countries", f.countries)),
@@ -1078,6 +1118,10 @@ async function play(item, startAt, queue) {
   try { info = await api("item/" + item.id); } catch (err) { return alert(err.message); }
   const duration = info.duration;
   let converted = false, offset = 0, audio = 0, closed = false, session = null;
+  // Subtitles: the key of the track shown ("" for none), and the picture
+  // track burned into the converted stream (-1 for none).
+  const subTracks = info.subtitleTracks || [];
+  let subKey = "", burn = -1;
 
   const video = h("video", { controls: true, autoplay: true, playsInline: true });
   const nativeHLS = !!video.canPlayType("application/vnd.apple.mpegurl");
@@ -1120,12 +1164,36 @@ async function play(item, startAt, queue) {
     "aria-label": "Audio track",
     onchange: () => { audio = +audioSelect.value; convert(position()); },
   }, info.audio.map((a, i) => h("option", { value: i }, `Audio ${i + 1}: ${[a.title, a.language, a.codec].filter(Boolean).join(", ")}`)));
+  // Text subtitles are shown by the browser over any stream; picture ones
+  // (Blu-ray, DVD) only burned into a converted one, which they switch to.
+  const subSelect = subTracks.length > 0 && h("select", {
+    "aria-label": "Subtitles",
+    onchange: () => chooseSubtitles(subSelect.value, true),
+  }, h("option", { value: "" }, "Subtitles: off"),
+    subTracks.map(t => h("option", { value: t.key }, t.image ? `${t.label} (burned in)` : t.label)));
+  function chooseSubtitles(key, byHand) {
+    const track = subTracks.find(t => t.key === key);
+    subKey = track ? key : "";
+    if (subSelect) subSelect.value = subKey;
+    if (byHand) { // remembered for the next video: the language, or none
+      try { localStorage.setItem("mk_subtitles", track && !track.image ? track.lang || track.label : track ? "" : "off"); } catch { /* private mode */ }
+    }
+    const wanted = track && track.image ? track.ordinal : -1;
+    if (wanted !== burn) { // the picture has to change: a new stream
+      burn = wanted;
+      if (burn >= 0 || converted) return convert(position());
+    }
+    showSubtitles();
+  }
+  function showSubtitles() {
+    for (const t of video.textTracks) t.mode = t.id === "sub-" + subKey ? "showing" : "disabled";
+  }
   const mode = h("button", { onclick: () => converted ? direct(position()) : convert(position()) });
   const box = h("div", { class: "player" },
     h("div", { class: "top glass" },
       h("button", { onclick: close }, "← Back"),
       h("span", { class: "name" }, item.show ? `${item.show} · S${item.season}E${item.episode} · ${item.title}` : fullTitle(item)),
-      audioSelect, info.canTranscode && mode),
+      audioSelect, subSelect, info.canTranscode && mode),
     note, video, seek);
 
   const position = () => (converted ? offset : 0) + (video.currentTime || 0);
@@ -1135,14 +1203,21 @@ async function play(item, startAt, queue) {
     session = null;
   };
 
+  // subtitles puts the text tracks on the video, their times moved back by
+  // shift (a converted stream starts at zero), and shows the chosen one. A
+  // track is only fetched once it is shown.
   function subtitles(shift) {
     video.querySelectorAll("track").forEach(t => t.remove());
-    for (let i = 0; i < info.subtitles; i++)
-      video.append(h("track", { kind: "subtitles", label: `Subtitles ${i + 1}`, src: `/api/subs/${info.id}/${i}.vtt?offset=${shift}`, default: i === 0 }));
+    for (const t of subTracks.filter(t => !t.image))
+      video.append(h("track", { kind: "subtitles", id: "sub-" + t.key, label: t.label, srclang: t.lang || "", src: `/api/subs/${info.id}/${t.key}.vtt?offset=${shift}` }));
+    showSubtitles();
+    // The browser sets up the tracks a moment later.
+    setTimeout(showSubtitles, 0);
   }
   function direct(at) {
     endSession();
     converted = false; offset = 0; say("");
+    if (burn >= 0) { burn = -1; subKey = ""; if (subSelect) subSelect.value = ""; } // the original has no burned-in subtitles
     box.classList.remove("custom", "idle");
     video.controls = true; // the browser's own: the file has a length, they can seek
     mode.textContent = "Does not play? Convert";
@@ -1166,7 +1241,7 @@ async function play(item, startAt, queue) {
       say("");
       try {
         // The server ends this viewer's previous stream itself.
-        const started = await api(`hls/start/${info.id}`, { json: { start: from, audio } });
+        const started = await api(`hls/start/${info.id}`, { json: { start: from, audio, ...(burn >= 0 ? { burn } : {}) } });
         if (closed) return api("hls/s/" + started.id, { method: "DELETE" }).catch(() => {});
         session = started.id;
         converted = true; offset = from;
@@ -1177,7 +1252,7 @@ async function play(item, startAt, queue) {
       }
     } else {
       converted = true; offset = from; say("");
-      video.src = `/api/transcode/${info.id}?start=${offset}&audio=${audio}`;
+      video.src = `/api/transcode/${info.id}?start=${offset}&audio=${audio}` + (burn >= 0 ? `&burn=${burn}` : "");
     }
     slider.value = offset;
     subtitles(offset);
@@ -1286,6 +1361,12 @@ async function play(item, startAt, queue) {
   video.addEventListener("dblclick", () => { if (converted && fullscreen) { clearTimeout(clickTimer); toggleFullscreen(); } });
 
   const startPosition = startAt !== undefined ? startAt : (info.position || 0);
+  // The subtitles chosen last time: the same language again, if the video
+  // has it as text (picture ones would force a conversion).
+  let remembered = "";
+  try { remembered = localStorage.getItem("mk_subtitles") || ""; } catch { /* private mode */ }
+  const again = remembered && remembered !== "off" && subTracks.find(t => !t.image && (t.lang || t.label) === remembered);
+  if (again) { subKey = again.key; if (subSelect) subSelect.value = subKey; }
   document.body.append(box);
   box.tabIndex = -1;
   box.focus(); // not the page's Play button beneath: Space is for the player now

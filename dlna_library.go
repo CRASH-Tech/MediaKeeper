@@ -76,10 +76,20 @@ type nfoInfo struct {
 	Studios   []string `xml:"studio"`
 	Directors []string `xml:"director"`
 	Writers   []string `xml:"credits"`
-	Actors    []struct {
+	// The film series: <set><name>…</name></set>, or <set>…</set> as older
+	// Kodi wrote it.
+	Set struct {
+		Name string `xml:"name"`
+		Text string `xml:",chardata"`
+	} `xml:"set"`
+	Actors []struct {
 		Name string `xml:"name"`
 		Role string `xml:"role"`
 	} `xml:"actor"`
+}
+
+func (n *nfoInfo) collection() string {
+	return strings.TrimSpace(firstNonEmpty(strings.TrimSpace(n.Set.Name), n.Set.Text))
 }
 
 func (n *nfoInfo) cast() []Person {

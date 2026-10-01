@@ -44,6 +44,8 @@ type vodSession struct {
 	id, dir, user string
 	item          *CatItem
 	audio         int
+	burn          int       // a picture subtitle track burned in, or -1
+	hw            string    // the graphics card of the running ffmpeg, "" for the processor
 	cuts          []float64 // where each segment begins; the last one ends at duration
 	duration      float64
 	copied        bool
@@ -93,7 +95,7 @@ const vodSeekMargin = 0.5
 
 // startVOD prepares a whole-film conversion of a video from a moment, or
 // says why it cannot (the caller falls back to the growing playlist).
-func (m *hlsManager) startVOD(it *CatItem, user *User, from float64, audio int) (*vodSession, error) {
+func (m *hlsManager) startVOD(it *CatItem, user *User, from float64, audio, burn int) (*vodSession, error) {
 	s := m.s
 	if s.ffmpeg == "" {
 		return nil, errors.New("ffmpeg is not installed on the server")
@@ -103,7 +105,7 @@ func (m *hlsManager) startVOD(it *CatItem, user *User, from float64, audio int) 
 	if duration <= 0 {
 		return nil, errors.New("the length of the video is unknown")
 	}
-	_, copied := s.convertArgs(it, audio, true)
+	copied := s.convertArgs(it, convertOptions{audio: audio, hls: true, burn: burn}).copied
 	var keyframes []float64
 	if copied {
 		var err error
@@ -143,7 +145,7 @@ func (m *hlsManager) startVOD(it *CatItem, user *User, from float64, audio int) 
 		<-s.transcodes
 		return nil, err
 	}
-	v := &vodSession{id: randomHex(12), dir: dir, user: user.ID, item: it, audio: audio, duration: duration,
+	v := &vodSession{id: randomHex(12), dir: dir, user: user.ID, item: it, audio: audio, burn: burn, duration: duration,
 		cuts: vodCuts(keyframes, duration), copied: copied, m: m, done: map[int]bool{}, last: time.Now()}
 	m.mu.Lock()
 	m.vods[v.id] = v
@@ -183,7 +185,11 @@ func (v *vodSession) run(n int) error {
 	v.kill()
 	s := v.m.s
 	from := v.cuts[n]
-	args := []string{"-nostdin", "-v", "error", "-copyts"}
+	// A re-encoded track gets a key frame every hlsSegmentSeconds counted
+	// from where the run starts (ffmpeg's t is the run's own clock, even
+	// with -copyts); runs start on that grid, so all of them agree.
+	conv := s.convertArgs(v.item, convertOptions{audio: v.audio, hls: true, burn: v.burn})
+	args := append([]string{"-nostdin", "-v", "error", "-copyts"}, conv.input...)
 	if from > 0 {
 		start := from // a re-encoded track starts at the very moment
 		if v.copied {
@@ -192,11 +198,7 @@ func (v *vodSession) run(n int) error {
 		args = append(args, "-ss", strconv.FormatFloat(start, 'f', 3, 64))
 	}
 	args = append(args, "-i", v.item.Path)
-	// A re-encoded track gets a key frame every hlsSegmentSeconds counted
-	// from where the run starts (ffmpeg's t is the run's own clock, even
-	// with -copyts); runs start on that grid, so all of them agree.
-	convert, _ := s.convertArgs(v.item, v.audio, true)
-	args = append(args, convert...)
+	args = append(args, conv.output...)
 	var times []string
 	for _, c := range v.cuts[n+1:] {
 		times = append(times, strconv.FormatFloat(c, 'f', 3, 64))
@@ -219,7 +221,7 @@ func (v *vodSession) run(n int) error {
 	}
 	exited := make(chan struct{})
 	go func() { cmd.Wait(); close(exited) }()
-	v.cmd, v.exited, v.stderr, v.runFrom, v.listed, v.paused = cmd, exited, stderr, n, 0, false
+	v.cmd, v.exited, v.stderr, v.runFrom, v.listed, v.paused, v.hw = cmd, exited, stderr, n, 0, false, conv.hw
 	return nil
 }
 
@@ -312,7 +314,17 @@ func (v *vodSession) segment(r *http.Request, n int) (string, error) {
 		case <-exited:
 			v.mu.Lock()
 			v.refresh()
-			ok := v.done[n]
+			ok, hw := v.done[n], v.hw
+			if !ok && hw != "" && v.cmd != nil {
+				// The card could not do this file: once more on the processor.
+				v.m.s.hwGaveUp(v.item.Path, lastLine(stderr.String()))
+				err := v.run(n)
+				v.mu.Unlock()
+				if err != nil {
+					return "", err
+				}
+				continue
+			}
 			v.mu.Unlock()
 			if !ok {
 				return "", fmt.Errorf("the conversion failed: %s", lastLine(stderr.String()))

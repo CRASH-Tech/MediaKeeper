@@ -71,6 +71,39 @@ type jfDeviceProfile struct {
 	DirectPlayProfiles []struct {
 		Type, Container, VideoCodec, AudioCodec string
 	}
+	// How the player wants each subtitle format: Embed (it draws them from
+	// the file), External (as a file of their own), Encode (burned in).
+	SubtitleProfiles []struct {
+		Format, Method string
+	}
+}
+
+// drawsItself tells whether the player shows a picture subtitle format
+// from the file; otherwise it has to be burned in.
+func (p *jfDeviceProfile) drawsItself(format string) bool {
+	for _, sp := range p.SubtitleProfiles {
+		if strings.EqualFold(sp.Format, format) && strings.EqualFold(sp.Method, "Embed") {
+			return true
+		}
+	}
+	return false
+}
+
+// subtitleOrdinal is a subtitle track's number among the file's subtitle
+// tracks (ffmpeg's 0:s:N), and whether it is pictures; -1 if no such track.
+func subtitleOrdinal(info probeInfo, index int) (int, bool) {
+	n := 0
+	for _, st := range info.Streams {
+		if st.Type != "subtitle" {
+			continue
+		}
+		if st.Index == index {
+			_, image := imageSubtitles[st.Codec]
+			return n, image
+		}
+		n++
+	}
+	return -1, false
 }
 
 // jfContainers are the names a file's container goes by in profiles.
@@ -126,11 +159,12 @@ func (c *jfContext) playbackInfo() {
 	}
 	it := e.item
 	var req struct {
-		DeviceProfile     *jfDeviceProfile
-		AudioStreamIndex  *int
-		StartTimeTicks    int64
-		EnableDirectPlay  *bool
-		EnableTranscoding *bool
+		DeviceProfile       *jfDeviceProfile
+		AudioStreamIndex    *int
+		SubtitleStreamIndex *int
+		StartTimeTicks      int64
+		EnableDirectPlay    *bool
+		EnableTranscoding   *bool
 	}
 	if c.r.Method == http.MethodPost {
 		c.body(&req)
@@ -138,6 +172,10 @@ func (c *jfContext) playbackInfo() {
 	if req.AudioStreamIndex == nil && c.q["audiostreamindex"] != "" {
 		n := c.q.int("audiostreamindex")
 		req.AudioStreamIndex = &n
+	}
+	if req.SubtitleStreamIndex == nil && c.q["subtitlestreamindex"] != "" {
+		n := c.q.int("subtitlestreamindex")
+		req.SubtitleStreamIndex = &n
 	}
 	info := c.s.lib.ProbeNow(it) // a file just downloaded may not be measured yet
 	play := c.s.plays.issue(c.u, it.ID)
@@ -163,6 +201,19 @@ func (c *jfContext) playbackInfo() {
 	if req.EnableDirectPlay != nil && !*req.EnableDirectPlay {
 		direct = false
 	}
+	// Picture subtitles the player cannot draw are burned into a converted
+	// stream.
+	burn, subtitle := -1, -1
+	if req.SubtitleStreamIndex != nil && *req.SubtitleStreamIndex >= 0 {
+		subtitle = *req.SubtitleStreamIndex
+		if n, image := subtitleOrdinal(info, subtitle); image && req.DeviceProfile != nil {
+			for _, st := range info.Streams {
+				if st.Index == subtitle && !req.DeviceProfile.drawsItself(imageSubtitles[st.Codec]) {
+					burn, direct = n, false
+				}
+			}
+		}
+	}
 	canConvert := c.s.ffmpeg != "" && (req.EnableTranscoding == nil || *req.EnableTranscoding)
 	if !direct && canConvert {
 		// Converted: H.264 (copied when it already is) and AAC, as HLS.
@@ -175,7 +226,23 @@ func (c *jfContext) playbackInfo() {
 		if req.StartTimeTicks > 0 {
 			url += fmt.Sprintf("&StartTimeTicks=%d", req.StartTimeTicks)
 		}
+		if burn >= 0 {
+			url += fmt.Sprintf("&SubtitleStreamIndex=%d&SubtitleMethod=Encode", subtitle)
+		}
 		source["TranscodingUrl"] = url
+		// The stream has no subtitles of its own: text ones come as files,
+		// the burned-in one is in the picture.
+		for _, m := range source["MediaStreams"].([]map[string]any) {
+			if m["Type"] != "Subtitle" {
+				continue
+			}
+			switch {
+			case m["Index"] == subtitle && burn >= 0:
+				m["DeliveryMethod"] = "Encode"
+			case m["SupportsExternalStream"] == true:
+				m["DeliveryMethod"] = "External"
+			}
+		}
 	}
 	if c.s.debug != nil {
 		c.s.log("JF playback of %q (%s, %s/%s): %s", it.Title, container, video, audio,
@@ -223,6 +290,12 @@ func (c *jfContext) master() {
 		}
 	}
 	from := time.Duration(c.q.int64("starttimeticks") * 100).Seconds()
+	burn := -1 // picture subtitles burned in, as PlaybackInfo decided
+	if c.q["subtitlestreamindex"] != "" {
+		if n, image := subtitleOrdinal(c.s.lib.ProbeNow(it), c.q.int("subtitlestreamindex")); image {
+			burn = n
+		}
+	}
 	ps := c.s.plays.find(c.q["playsessionid"], it.ID)
 	// Asked again for the same playback: the same conversion.
 	id, copied := "", false
@@ -236,7 +309,7 @@ func (c *jfContext) master() {
 	if id == "" {
 		// The whole film, so the player can seek anywhere; a file whose key
 		// frames are not known gets the playlist that grows instead.
-		v, err := c.s.hls.startVOD(it, u, from, audio)
+		v, err := c.s.hls.startVOD(it, u, from, audio, burn)
 		if err == nil {
 			id, copied = v.id, v.copied
 		} else if err == errBusyConverting {
@@ -246,7 +319,7 @@ func (c *jfContext) master() {
 			if c.s.debug != nil {
 				c.s.log("JF whole-film conversion of %q not possible (%v): the growing playlist instead", it.Title, err)
 			}
-			sess, err := c.s.hls.start(it, u, from, audio)
+			sess, err := c.s.hls.start(it, u, from, audio, burn)
 			if err != nil {
 				status := http.StatusInternalServerError
 				if err == errBusyConverting {

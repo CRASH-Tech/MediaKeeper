@@ -45,10 +45,17 @@ services:
       # volume below.
       # MEDIAKEEPER_DB: /config/mediakeeper/mediakeeper.db
       # MEDIAKEEPER_CACHE: /cache
+      # Convert video on a graphics card (Intel or AMD, with "devices" below):
+      # MEDIAKEEPER_HWACCEL: auto
       # Keys can be given here instead of "mediakeeper -setup":
       # TMDB_API_KEY: ""
       # OMDB_API_KEY: ""
       # KINOPOISK_API_KEY: ""
+
+    # The graphics card for MEDIAKEEPER_HWACCEL, and the host's group that
+    # may use it (its number: getent group render | cut -d: -f3).
+    # devices: ["/dev/dri:/dev/dri"]
+    # group_add: ["993"]
 
     volumes:
       - ./media:/media # the library: Movies/ and Shows/ are created inside

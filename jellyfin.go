@@ -890,6 +890,10 @@ func (c *jfContext) mediaSource(it *CatItem) map[string]any {
 		default:
 			m["Type"], m["IsTextSubtitleStream"] = "Subtitle", jfTextSubtitles[st.Codec]
 			m["DeliveryMethod"] = "Embed"
+			if jfTextSubtitles[st.Codec] { // also as a file of its own, for a converted stream
+				m["SupportsExternalStream"] = true
+				m["DeliveryUrl"] = fmt.Sprintf("/Videos/%s/%s/Subtitles/%d/0/Stream.srt?api_key=%s", it.ID, it.ID, st.Index, token)
+			}
 		}
 		streams = append(streams, m)
 		next = max(next, st.Index+1)
@@ -1205,21 +1209,22 @@ func (c *jfContext) subtitle() {
 		}
 		return
 	}
-	// External subtitles are numbered after the tracks inside the file.
+	// A track inside the file is named by its index; the .srt files next to
+	// it are numbered after those.
 	first := 0
 	for _, st := range c.s.lib.Probe(e.item).Streams {
 		first = max(first, st.Index+1)
 	}
-	n := atoi(c.arg["index"]) - first
-	if n < 0 || n >= len(e.item.Subs) {
-		c.notFound()
+	index := atoi(c.arg["index"])
+	key := fmt.Sprintf("e%d", index)
+	if index >= first {
+		key = fmt.Sprintf("x%d", index-first)
+	}
+	if strings.HasSuffix(strings.ToLower(c.arg["file"]), ".vtt") {
+		c.s.serveSubtitle(c.w, c.r, e.item, key, 0)
 		return
 	}
-	if strings.HasSuffix(c.arg["file"], ".vtt") {
-		c.s.subtitles(c.w, c.r, e.item, n, 0)
-		return
-	}
-	text, err := subtitleText(e.item.Subs[n])
+	text, err := c.s.subtitleSRT(e.item, key)
 	if err != nil {
 		c.notFound()
 		return

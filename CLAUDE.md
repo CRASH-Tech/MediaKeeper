@@ -65,7 +65,7 @@ GOTOOLCHAIN=go1.24.0 go build .      # go.mod promises Go 1.24: check after touc
 | Server core | `server.go` (Server, Handler, roots, slots, `moved`), `web.go` (web API), `users.go` (SQLite: accounts, sessions, watch states, history), `mine.go` (ratings, watchlist, history API) |
 | Catalogue for the server | `catalog.go` (CatItem/CatShow, IDs), `probe.go` (ffprobe cache) |
 | Editing metadata | `meta.go` (movies, generic `.nfo` XML editing, tag writer), `meta_show.go` (series, episodes) |
-| Playback | `hls.go` (growing HLS for Safari, progressive fMP4, `convertArgs`), `vod.go` (whole-film HLS), `mkvcues.go` (Matroska key frame index), `screens.go` (screenshots, episode stills) |
+| Playback | `convert.go` (`convertArgs`: copy/re-encode, burned-in subtitles, graphics cards), `hls.go` (growing HLS for Safari), `vod.go` (whole-film HLS), `mkvcues.go` (Matroska key frame index), `subtitles.go` (tracks, extraction to WebVTT), `screens.go` (screenshots, episode stills) |
 | Jellyfin API | `jellyfin.go` (routes, DTOs), `jellyfin_play.go` (PlaybackInfo, device profiles, play sessions, master playlist), `debug.go` (`-debug` request log) |
 | DLNA | `dlna.go`, `dlna_library.go` (its own scan of the folders), `ssdp.go` |
 | Downloads | `downloads.go` (HTTP, aria2c, organizing, presets) |
@@ -156,6 +156,15 @@ GOTOOLCHAIN=go1.24.0 go build .      # go.mod promises Go 1.24: check after touc
 - **Growing HLS** (Safari web player): fixed `EXT-X-TARGETDURATION` per
   session (Safari stops when it changes), ffmpeg paused with SIGSTOP when far
   ahead. Interlaced H.264 is converted with bwdif, never copied.
+- **Subtitles**: text tracks are extracted all at once per file into
+  `<cache>/subtitles/` and served as WebVTT with an offset; picture tracks
+  (PGS/DVD) are burned in (`convertOptions.burn` = ffmpeg's `0:s:N`, `-1` for
+  none — every caller sets it explicitly; 0 means the first track!).
+- **Hardware conversion** (`convert.go`): `hwaccel` none/auto/vaapi/qsv/nvenc,
+  chosen only if a test encode works at start; a file the card fails on is
+  remembered (`hwGaveUp`) and goes to the CPU (VOD retries at once). There is
+  no GPU on this machine (a VM): hardware paths are tested by their arguments
+  and by a failing fake device only.
 - **Conversion slots**: at most two ffmpeg conversions; a viewer's new stream
   ends their previous one first (`viewerStreams`), and a slot is waited for
   up to 10 s.

@@ -16,6 +16,14 @@ FROM alpine:3
 # codecs for the clients, conversion for the web player. aria2: torrents and
 # magnet links. ca-certificates: HTTPS to the catalogues.
 RUN apk add --no-cache aria2 ca-certificates ffmpeg mkvtoolnix tzdata
+# Intel graphics for hardware conversion (MEDIAKEEPER_HWACCEL=auto, vaapi or
+# qsv); its drivers exist for x86-64 only. An AMD card needs mesa-va-gallium,
+# 200 MB more, so it is not in the image by default:
+#   docker build --build-arg EXTRA_PACKAGES=mesa-va-gallium .
+# Alpine's ffmpeg has no NVENC: for NVIDIA, run the binary on the host.
+ARG EXTRA_PACKAGES=""
+RUN if [ "$(apk --print-arch)" = "x86_64" ]; then apk add --no-cache intel-media-driver onevpl-intel-gpu; fi && \
+    if [ -n "$EXTRA_PACKAGES" ]; then apk add --no-cache $EXTRA_PACKAGES; fi
 COPY --from=build /mediakeeper /usr/local/bin/mediakeeper
 
 # Settings (API keys) live in /config, the library in /media. The program's

@@ -180,9 +180,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		case "transcode":
 			s.transcode(w, r, it, u)
 		case "subs":
-			n, _ := strconv.Atoi(strings.TrimSuffix(arg(2), ".vtt"))
 			offset, _ := strconv.ParseFloat(r.URL.Query().Get("offset"), 64)
-			s.subtitles(w, r, it, n, offset)
+			s.serveSubtitle(w, r, it, strings.TrimSuffix(arg(2), ".vtt"), offset)
 		case "progress":
 			var req struct {
 				Position float64 `json:"position"`
@@ -283,7 +282,7 @@ func (s *Server) itemJSON(it *CatItem, u *User, details bool) map[string]any {
 			audio = append(audio, map[string]any{"language": st.Language, "title": st.Title, "codec": st.Codec, "channels": st.Channels})
 		}
 	}
-	m["audio"], m["subtitles"] = audio, len(it.Subs)
+	m["audio"], m["subtitleTracks"] = audio, s.subtitleTracks(it)
 	if v := info.stream("video"); v != nil {
 		m["video"] = fmt.Sprintf("%s %dx%d", v.Codec, v.Width, v.Height)
 	}
@@ -311,6 +310,9 @@ func (s *Server) libraryJSON(cat *Catalog, u *User) map[string]any {
 		m["plot"], m["tagline"], m["originalTitle"], m["mpaa"], m["date"] = it.Plot, it.Tagline, it.OriginalTitle, it.MPAA, it.Date
 		m["countries"], m["studios"], m["directors"], m["writers"] = it.Countries, it.Studios, it.Directors, it.Writers
 		m["cast"], m["imdb"] = people(it.Cast), it.IMDb
+		if it.Collection != "" {
+			m["collection"] = it.Collection
+		}
 		movies = append(movies, m)
 	}
 	shows := make([]map[string]any, 0, len(cat.Shows))
@@ -368,25 +370,45 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, it *CatItem, 
 	q := r.URL.Query()
 	start, _ := strconv.ParseFloat(q.Get("start"), 64)
 	audio, _ := strconv.Atoi(q.Get("audio"))
+	burn := -1 // a picture subtitle track to burn in
+	if q.Get("burn") != "" {
+		burn, _ = strconv.Atoi(q.Get("burn"))
+	}
 
-	args := []string{"-nostdin", "-v", "error"}
+	conv := s.convertArgs(it, convertOptions{audio: audio, burn: burn})
+	args := append([]string{"-nostdin", "-v", "error"}, conv.input...)
 	if start > 0 {
 		args = append(args, "-ss", strconv.FormatFloat(start, 'f', 3, 64))
 	}
 	args = append(args, "-i", it.Path)
-	convert, _ := s.convertArgs(it, audio, false)
-	args = append(args, convert...)
+	args = append(args, conv.output...)
 	args = append(args, "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "pipe:1")
 
 	var stderr bytes.Buffer
+	out := &countingWriter{w: w}
 	cmd := exec.CommandContext(ctx, s.ffmpeg, args...) // killed when the viewer leaves or seeks
-	cmd.Stdout, cmd.Stderr = w, &stderr
+	cmd.Stdout, cmd.Stderr = out, &stderr
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Cache-Control", "no-store")
 	s.log("▶ %s (%s)  %s  [converted, from %s]", who, clientIP(r), it.Title, time.Duration(start)*time.Second)
 	if err := cmd.Run(); err != nil && ctx.Err() == nil {
 		s.log("ffmpeg: %v: %s", err, lastLine(stderr.String()))
+		if conv.hw != "" && out.n < 64<<10 { // failed at the start: the player's next try goes to the processor
+			s.hwGaveUp(it.Path, lastLine(stderr.String()))
+		}
 	}
+}
+
+// countingWriter counts what passes through.
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func lastLine(s string) string {
@@ -431,23 +453,3 @@ func subtitleText(path string) (string, error) {
 // subtitles serves an .srt file as WebVTT, the format browsers accept. The
 // cues are shifted back by offset seconds: a converted stream that starts
 // in the middle of the film counts its time from zero.
-func (s *Server) subtitles(w http.ResponseWriter, r *http.Request, it *CatItem, n int, offset float64) {
-	if n < 0 || n >= len(it.Subs) {
-		http.NotFound(w, r)
-		return
-	}
-	text, err := subtitleText(it.Subs[n])
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = reSRTTime.ReplaceAllStringFunc(text, func(m string) string {
-		p := reSRTTime.FindStringSubmatch(m)
-		ms := (atoi(p[1])*3600+atoi(p[2])*60+atoi(p[3]))*1000 + atoi(p[4]) - int(offset*1000)
-		ms = max(ms, 0)
-		return fmt.Sprintf("%02d:%02d:%02d.%03d", ms/3600000, ms/60000%60, ms/1000%60, ms%1000)
-	})
-	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
-	io.WriteString(w, "WEBVTT\n\n"+text)
-}

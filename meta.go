@@ -197,6 +197,7 @@ type movieMeta struct {
 	Countries     []string `json:"countries"`
 	Cast          []Person `json:"cast"`
 	Status        string   `json:"status,omitempty"` // a series: Continuing, Ended
+	Collection    string   `json:"collection"`       // a movie: the film series it belongs to
 }
 
 // nfoPathFor is the .nfo a movie is described in: named after the video,
@@ -218,6 +219,9 @@ func metaFromNFO(n *xmlNode) movieMeta {
 		Released: n.text("premiered"), Tagline: n.text("tagline"), Plot: n.text("plot"), MPAA: n.text("mpaa"),
 		Genres: n.texts("genre"), Directors: n.texts("director"), Writers: n.texts("credits"),
 		Studios: n.texts("studio"), Countries: n.texts("country"), Status: n.text("status"),
+	}
+	if set := n.child("set"); set != nil {
+		m.Collection = strings.TrimSpace(firstNonEmpty(set.text("name"), strings.TrimSpace(set.Text)))
 	}
 	m.Year, _ = strconv.Atoi(n.text("year"))
 	m.Rating, _ = strconv.ParseFloat(n.text("rating"), 64)
@@ -256,6 +260,16 @@ func (m *movieMeta) apply(n *xmlNode) {
 		n.set("status", m.Status)
 	} else {
 		n.set("tagline", m.Tagline)
+		// <set><name>…</name></set>, as Kodi and Jellyfin read it.
+		var sets []string
+		if c := strings.TrimSpace(m.Collection); c != "" {
+			sets = []string{c}
+		}
+		n.setAll("set", sets, func(name string) xmlNode {
+			set := xmlNode{XMLName: xml.Name{Local: "set"}}
+			set.set("name", name)
+			return set
+		})
 	}
 	n.set("plot", m.Plot)
 	n.set("mpaa", m.MPAA)
@@ -377,6 +391,7 @@ func (s *Server) lookupMeta(id string, req resolveRequest) (map[string]any, erro
 		Title: mv.Title, OriginalTitle: mv.OriginalTitle, LocalTitle: mv.Local.Title, Year: mv.Year,
 		Released: mv.Released, Tagline: mv.Tagline, Plot: mv.Overview, MPAA: mv.MPAA, Rating: round1(mv.Rating),
 		Genres: mv.Genres, Directors: mv.Directors, Writers: mv.Writers, Studios: mv.Studios, Countries: mv.Countries, Cast: mv.Cast,
+		Collection: mv.Collection,
 	}
 	if series {
 		meta.Status = m.Show.Status

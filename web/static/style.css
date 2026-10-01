@@ -581,3 +581,7 @@ textarea:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb,
 .history-entry .name { font-weight: 600; color: var(--text); }
 .history-entry .dim { font-size: 13px; }
 .history > button { margin: 16px auto; display: block; }
+
+.browse-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.browse-bar p { margin: 0; }
+.browse-bar .sort { margin-left: auto; }

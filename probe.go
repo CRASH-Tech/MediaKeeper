@@ -23,6 +23,7 @@ type streamInfo struct {
 	Height   int
 	Channels int
 	Default  bool
+	Forced   bool // subtitles: only the foreign-language parts
 
 	Level         int
 	BitRate       int
@@ -167,7 +168,7 @@ func (p *prober) probe(path string) probeInfo {
 	var info probeInfo
 	out, err := exec.Command(p.tool, "-v", "error", "-show_entries",
 		"format=duration,bit_rate:stream=index,codec_type,codec_name,profile,level,width,height,channels,channel_layout,sample_rate,bit_rate,"+
-			"pix_fmt,avg_frame_rate,r_frame_rate,field_order,display_aspect_ratio,bits_per_raw_sample,refs,time_base:stream_tags=language,title:stream_disposition=default",
+			"pix_fmt,avg_frame_rate,r_frame_rate,field_order,display_aspect_ratio,bits_per_raw_sample,refs,time_base:stream_tags=language,title:stream_disposition=default,forced",
 		"-of", "json", path).Output()
 	if err != nil {
 		return info
@@ -199,6 +200,7 @@ func (p *prober) probe(path string) probeInfo {
 			} `json:"tags"`
 			Disposition struct {
 				Default int `json:"default"`
+				Forced  int `json:"forced"`
 			} `json:"disposition"`
 		} `json:"streams"`
 		Format struct {
@@ -222,7 +224,7 @@ func (p *prober) probe(path string) probeInfo {
 		}
 		info.Streams = append(info.Streams, streamInfo{Index: s.Index, Type: s.Type, Codec: s.Codec, Profile: s.Profile,
 			Language: s.Tags.Language, Title: s.Tags.Title, Width: s.Width, Height: s.Height,
-			Channels: s.Channels, Default: s.Disposition.Default == 1,
+			Channels: s.Channels, Default: s.Disposition.Default == 1, Forced: s.Disposition.Forced == 1,
 			Level: s.Level, Refs: s.Refs, ChannelLayout: s.Layout, SampleRate: atoi(s.Rate), BitRate: atoi(s.BitRate),
 			PixelFormat: s.PixFmt, FrameRate: ratio(s.FPS), FieldOrder: s.Fields, FieldRate: ratio(s.RFPS), AspectRatio: s.Aspect, BitDepth: atoi(s.Depth), TimeBase: s.TimeBase})
 	}

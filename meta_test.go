@@ -411,3 +411,40 @@ func TestSeriesWithoutFolder(t *testing.T) {
 		t.Errorf("the whole library was described as one series")
 	}
 }
+
+// The film series a movie belongs to is read from the .nfo in both forms
+// Kodi wrote, shown in the library, and can be set by hand.
+func TestCollection(t *testing.T) {
+	s, srv := serverFixture(t)
+	boss := newBrowser(t, srv, "boss")
+	nfo := filepath.Join(s.root, "Iron Man (2008)", "Iron Man (2008).nfo")
+	for _, set := range []string{"<set><name>Iron Man Collection</name></set>", "<set>Iron Man Collection</set>"} {
+		os.WriteFile(nfo, []byte(nfoHeader+"<movie><title>Iron Man</title><year>2008</year>"+set+"</movie>"), 0o644)
+		s.refresh()
+		var lib struct {
+			Movies []struct{ ID, Title, Collection string }
+		}
+		boss.json("/api/library", &lib)
+		if lib.Movies[0].Collection != "Iron Man Collection" {
+			t.Errorf("%s: %+v", set, lib.Movies[0])
+		}
+	}
+	var lib libraryView
+	boss.json("/api/library", &lib)
+	id := lib.Movies[0].ID
+	var m movieMeta
+	boss.json("/api/meta/"+id, &m)
+	if m.Collection != "Iron Man Collection" {
+		t.Fatalf("in the editor: %+v", m)
+	}
+	m.Collection = "Marvel Cinematic Universe"
+	boss.post("/api/meta/"+id, m)
+	if text := mustRead(t, nfo); !strings.Contains(text, "<set>\n    <name>Marvel Cinematic Universe</name>\n  </set>") && !strings.Contains(text, "<name>Marvel Cinematic Universe</name>") || strings.Contains(text, "Iron Man Collection") {
+		t.Errorf("written:\n%s", text)
+	}
+	m.Collection = ""
+	boss.post("/api/meta/"+id, m)
+	if text := mustRead(t, nfo); strings.Contains(text, "<set") {
+		t.Errorf("an empty series is removed:\n%s", text)
+	}
+}

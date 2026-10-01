@@ -53,6 +53,8 @@ type hlsSession struct {
 	target       int     // the fixed EXT-X-TARGETDURATION of the playlist
 	firstSeconds float64 // of video the first playlist waits for
 	converting   bool    // the video track is re-encoded, not copied
+	hw           string  // the graphics card converts it ("" for the processor)
+	path         string  // the file converted
 	warned       time.Time
 
 	mu      sync.Mutex
@@ -76,7 +78,7 @@ func newHLSManager(s *Server) *hlsManager {
 // start launches a conversion of the video from the given second. A user
 // watches one converted video at a time: their earlier sessions are ended,
 // which is also what a seek amounts to.
-func (m *hlsManager) start(it *CatItem, user *User, from float64, audio int) (*hlsSession, error) {
+func (m *hlsManager) start(it *CatItem, user *User, from float64, audio, burn int) (*hlsSession, error) {
 	s := m.s
 	if s.ffmpeg == "" {
 		return nil, errors.New("ffmpeg is not installed on the server")
@@ -100,19 +102,20 @@ func (m *hlsManager) start(it *CatItem, user *User, from float64, audio int) (*h
 		<-s.transcodes
 		return nil, err
 	}
-	args := []string{"-nostdin", "-v", "error"}
+	conv := s.convertArgs(it, convertOptions{audio: audio, hls: true, burn: burn})
+	copied := conv.copied
+	args := append([]string{"-nostdin", "-v", "error"}, conv.input...)
 	if from > 0 {
 		args = append(args, "-ss", strconv.FormatFloat(from, 'f', 3, 64))
 	}
 	args = append(args, "-i", it.Path)
-	convert, copied := s.convertArgs(it, audio, true)
-	args = append(args, convert...)
+	args = append(args, conv.output...)
 	args = append(args, "-f", "hls", "-hls_time", strconv.Itoa(hlsSegmentSeconds), "-hls_list_size", "0",
 		"-hls_playlist_type", "event", "-hls_flags", "independent_segments+temp_file",
 		"-hls_segment_filename", filepath.Join(dir, "seg%05d.ts"), filepath.Join(dir, "index.m3u8"))
 
 	sess := &hlsSession{id: randomHex(12), dir: dir, user: user.ID, last: time.Now(), exited: make(chan struct{}),
-		target: hlsSegmentSeconds, firstSeconds: 1, converting: !copied}
+		target: hlsSegmentSeconds, firstSeconds: 1, converting: !copied, hw: conv.hw, path: it.Path}
 	if copied {
 		sess.target, sess.firstSeconds = hlsCopyTarget, hlsCopyFirstSeconds
 	}
@@ -223,9 +226,14 @@ func (m *hlsManager) api(w http.ResponseWriter, r *http.Request, u *User, parts 
 		var req struct {
 			Start float64 `json:"start"`
 			Audio int     `json:"audio"`
+			Burn  *int    `json:"burn"` // a picture subtitle track to burn in
 		}
 		readJSON(r, &req)
-		sess, err := m.start(it, u, req.Start, req.Audio)
+		burn := -1
+		if req.Burn != nil {
+			burn = *req.Burn
+		}
+		sess, err := m.start(it, u, req.Start, req.Audio, burn)
 		if err != nil {
 			status := http.StatusInternalServerError
 			if err == errBusyConverting {
@@ -306,6 +314,9 @@ func (m *hlsManager) serve(w http.ResponseWriter, r *http.Request, sess *hlsSess
 			case <-sess.exited:
 				if !exists(path) {
 					m.s.log("ffmpeg: %s", lastLine(sess.stderr.String()))
+					if sess.hw != "" { // the player's next try converts on the processor
+						m.s.hwGaveUp(sess.path, lastLine(sess.stderr.String()))
+					}
 					apiError(w, http.StatusInternalServerError, errors.New("the conversion failed"))
 					return
 				}
@@ -360,36 +371,4 @@ func (m *hlsManager) starving(sess *hlsSession, asked int) {
 
 var reExtinf = regexp.MustCompile(`#EXTINF:([\d.]+)`)
 
-// convertArgs are the ffmpeg options that turn any video into what
-// browsers play: H.264 and stereo AAC. A video track that already is H.264
-// is copied, which costs almost nothing. For HLS a re-encoded track gets a
-// key frame at every segment boundary.
 var reTargetDuration = regexp.MustCompile(`#EXT-X-TARGETDURATION:\d+`)
-
-// convertArgs returns the options and whether the video track is copied.
-func (s *Server) convertArgs(it *CatItem, audio int, hls bool) (args []string, copied bool) {
-	info := s.lib.Probe(it)
-	args = []string{"-map", "0:v:0", "-map", fmt.Sprintf("0:a:%d?", max(audio, 0)), "-sn", "-dn", "-map_chapters", "-1"}
-	v := info.stream("video")
-	if v != nil && v.Codec == "h264" && !strings.Contains(v.Profile, "10") && !v.Interlaced() {
-		args, copied = append(args, "-c:v", "copy"), true
-	} else {
-		filters := "scale='min(1920,iw)':-2"
-		if v != nil && v.Interlaced() {
-			// One frame per pair of fields, at a steady rate: such files
-			// often carry uneven time stamps as well.
-			filters = "bwdif=mode=send_frame," + filters
-			if rate := v.FieldRate; rate > 0 {
-				if rate > 31 {
-					rate /= 2
-				}
-				args = append(args, "-r", strconv.FormatFloat(rate, 'f', 3, 64))
-			}
-		}
-		args = append(args, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-vf", filters)
-		if hls {
-			args = append(args, "-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", hlsSegmentSeconds))
-		}
-	}
-	return append(args, "-c:a", "aac", "-ac", "2", "-b:a", "192k"), copied
-}
