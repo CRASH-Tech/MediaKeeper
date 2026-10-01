@@ -232,8 +232,11 @@ On the first start an administrator `admin` is created and its password is
 printed once. To choose your own, or to reset a forgotten one, start the
 server with `MEDIAKEEPER_ADMIN_PASSWORD` (and optionally `MEDIAKEEPER_ADMIN`
 for the name). More users are added on the **Users** page. Accounts, login
-tokens and watch progress are kept in `server.json` next to the settings
-file (see below); passwords are stored as salted PBKDF2 hashes.
+tokens, watch progress, ratings, watchlists and the history are kept in a
+SQLite database, `mediakeeper.db` next to the settings file (see
+[Settings file](#settings-file)); passwords are stored as salted PBKDF2
+hashes. A `server.json` of an earlier version is imported into it on the
+first start and kept as `server.json.old`.
 
 The server speaks plain HTTP. To reach it from the internet, put it behind a
 reverse proxy with TLS.
@@ -249,6 +252,19 @@ writers, cast, studio, country — and every value is a link: click an actor or
 a genre to see everything else in the library that shares it. Its **← Movies**
 (or **← Shows**) button — and the browser's Back — returns to the list it was
 opened from, with its filters and order, scrolled to that title.
+
+Everyone signed in keeps their own marks, which nobody else sees: a rating
+in stars (a click on a star gives the whole star, on its left edge a half;
+**×** removes it), **Watch later** for the watchlist, **Favorite**, and a
+note, on each title's page. The **My** page gathers them: **Continue** (what
+was started), **Watchlist**, **History** (every sitting by day, with the
+time really watched — pauses and skipping ahead do not count — and totals
+for the month and all time; entries can be removed), **Rated** and
+**Favorites**. The catalogue can be narrowed to these (**Mine**) and sorted
+by **My rating**; posters show the watchlist bookmark and your rating. A
+movie watched to the end leaves the watchlist by itself. When the server
+renames a title's files (a fix, filling in from a catalogue), all of this
+moves with it. Guests keep nothing.
 
 The player takes the file as it is when the browser can play it
 (MP4/WebM/Matroska with H.264, VP9 or AV1 video and AAC, MP3 or Opus audio).
@@ -353,21 +369,37 @@ the catalogues.
 Add the server's address (`http://host:8200`) in the app and sign in with a
 MediaKeeper user. What is implemented: sign-in, the Movies and Shows
 libraries, search, series/seasons/episodes, artwork, direct play with
-seeking, external `.srt` subtitles, watched state, resume and "next up".
+seeking or converted playback (HLS) for players that need it, external `.srt`
+subtitles, watched state, resume and "next up".
 
 What to expect:
 
-- **Only direct play.** The server does not transcode for Jellyfin clients;
-  the app's player has to handle the file itself (most native apps do).
+- **Played as it is, or converted.** An app tells the server which
+  containers and codecs its player takes (its device profile). A file it
+  takes is sent as it is; any other — Matroska for the Apple TV's own player,
+  say — is converted on the fly to HLS (H.264, copied when it already is,
+  and AAC). The playlist lists the whole film from the start, so the player
+  can seek anywhere; segments are made as they are asked for, and a jump
+  starts the conversion anew from there. A copied track can only be cut at
+  its key frames, which Matroska files list in their index (read in a few
+  milliseconds); a file without one gets a playlist that grows as the
+  conversion goes, with seeking only within what is done. The players an app hands
+  the address to (the system player, VLC) bring no login: the play session
+  the server gave the app is in the address, and opens that video only.
+  `-debug` logs every request of the apps and what the server decided.
 - **Native apps only.** Apps that are a shell around the server's own web
   page — the official *Jellyfin for Android/iOS* and *Jellyfin Media Player*
   — do not work: MediaKeeper does not ship Jellyfin's web client. Apps with
   their own interface (Jellyfin for Android TV, Swiftfin, Findroid, Infuse,
   Jellyfin for Kodi and the like) are the ones this is meant for.
-- **A subset of the API.** Answers were compared field by field with a real
-  Jellyfin 10.10 server, but no app was actually run against it yet. A
-  request the server does not know is written to its log once as
-  `Jellyfin API: not supported: …` — that line is what to report.
+- **A subset of the API.** The server reports itself as Jellyfin 12.0.0 —
+  Swiftfin and other current apps refuse anything older (Jellyfin dropped the
+  "10." from its version numbers with 12.0). Answers were compared field by
+  field with a real Jellyfin 10.10 server; login tokens are accepted in every
+  way clients send them, including those Jellyfin 12 switched off by
+  default, which Swiftfin on Apple TV still uses. A request the server does
+  not know is written to its log once as `Jellyfin API: not supported: …` —
+  that line is what to report.
 
 ### DLNA
 
@@ -488,6 +520,8 @@ current directory.
 | `-sources LIST` | Comma-separated sources in priority order                               |
 | `-lang CODE`    | Language of TMDB titles and descriptions, e.g. `ru-RU` (default `en-US`) |
 | `-setup`        | Enter API keys and exit                                                 |
+| `-debug`        | With `-serve`: log every request of the Jellyfin apps, and in full (device profiles, answers, video ranges; no tokens) in `jellyfin-debug.log` next to the settings |
+| `-db FILE`      | With `-serve`: the database of accounts, ratings, watchlists and history (default: `mediakeeper.db` next to the settings) |
 | `-config FILE`  | The settings file, or a folder for `config.yaml` in it (default: next to the program) |
 | `-serve`        | Run the media server for the folders instead of organizing them         |
 | `-port N`       | With `-serve`: HTTP port (default 8200)                                 |
@@ -505,8 +539,8 @@ variable `MEDIAKEEPER_CONFIG`. Where the program's folder cannot be written to
 `~/.config/mediakeeper/` instead; in Docker it is
 `/config/mediakeeper/config.yaml`. Settings that an earlier version kept in
 `~/.config/mediakeeper/` are moved next to the program on the first start,
-together with `server.json` (stop a running server before that, or it will
-write its accounts back to the old place).
+together with `server.json` or `mediakeeper.db` (stop a running server
+before that, or it will write its accounts back to the old place).
 
 Every setting is optional, and a flag on the command line wins over the file.
 `mediakeeper -setup` writes the file with a comment for every setting;
@@ -536,17 +570,24 @@ server:              # mediakeeper -serve
   dlna: true         # DLNA has no login: the whole local network can watch
   guests: true       # the web interface can be watched without signing in
   no_tags: false     # do not write tags into the files of downloads
+  database: /var/lib/mediakeeper/mediakeeper.db   # mediakeeper.db next to this file by default
 ```
 
 `tmdb_api_url` and `tmdb_image_url` point MediaKeeper at a mirror where TMDB
 itself is not reachable; a proxy from `HTTPS_PROXY` is honoured as well.
 
-Accounts, login tokens and watch progress are not settings: the server keeps
-them in `server.json` next to this file.
+Accounts, login tokens, watch progress, ratings, watchlists and the history
+are not settings: the server keeps them in the SQLite database
+`mediakeeper.db`, next to this file unless `database` in the settings, the
+`-db` flag or the variable `MEDIAKEEPER_DB` (a file, or a folder for
+`mediakeeper.db` in it) says otherwise. It is written as things happen, so
+nothing is lost when the server stops abruptly. To back it up while the
+server runs, use `sqlite3 mediakeeper.db ".backup copy.db"` rather than
+copying the file.
 
 ## Building from source
 
-Go 1.24 or newer, no other dependencies.
+Go 1.24 or newer; no C compiler is needed (SQLite comes as a pure Go package).
 
 ```sh
 go build -o mediakeeper .      # the web interface (web/) is embedded into the binary

@@ -2,6 +2,7 @@
 /mediakeeper
 /mediakeeper.exe
 /dist/
+/.cache/
 
 # Sample media for experiments
 /media/
@@ -14,3 +15,5 @@
 /config.json
 /config.json.old
 /server.json
+/mediakeeper.db
+/jellyfin-debug.log

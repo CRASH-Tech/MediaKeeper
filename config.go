@@ -31,11 +31,12 @@ type Config struct {
 
 // ServerConfig are the settings of -serve.
 type ServerConfig struct {
-	Name   string `yaml:"name,omitempty"`
-	Port   int    `yaml:"port,omitempty"`
-	DLNA   *bool  `yaml:"dlna,omitempty"`
-	Guests *bool  `yaml:"guests,omitempty"`
-	NoTags bool   `yaml:"no_tags,omitempty"`
+	Name     string `yaml:"name,omitempty"`
+	Database string `yaml:"database,omitempty"` // the SQLite file of accounts and watch states
+	Port     int    `yaml:"port,omitempty"`
+	DLNA     *bool  `yaml:"dlna,omitempty"`
+	Guests   *bool  `yaml:"guests,omitempty"`
+	NoTags   bool   `yaml:"no_tags,omitempty"`
 }
 
 // Where the settings live, in this order:
@@ -103,6 +104,24 @@ func findConfig(move bool) string {
 	return own
 }
 
+// databasePath is the SQLite file of the server: given with -db, else in
+// MEDIAKEEPER_DB, else in the settings, else mediakeeper.db next to the
+// settings file. A folder means mediakeeper.db in it.
+func databasePath(flag, setting string) string {
+	path := firstNonEmpty(flag, os.Getenv("MEDIAKEEPER_DB"), setting)
+	if path == "" {
+		return filepath.Join(filepath.Dir(configPath()), "mediakeeper.db")
+	}
+	abs, err := filepath.Abs(expandHome(path))
+	if err != nil {
+		abs = path
+	}
+	if st, err := os.Stat(abs); err == nil && st.IsDir() {
+		abs = filepath.Join(abs, "mediakeeper.db")
+	}
+	return abs
+}
+
 // legacyConfigDir is the user's configuration folder for MediaKeeper.
 func legacyConfigDir() string {
 	dir, err := os.UserConfigDir()
@@ -145,7 +164,7 @@ func appDir() string {
 // to another: all of them or, if anything fails, none.
 func moveConfig(from, to string) (moved []string, err error) {
 	var names []string
-	for _, name := range []string{"config.yaml", "config.json", "server.json"} {
+	for _, name := range []string{"config.yaml", "config.json", "server.json", "mediakeeper.db", "mediakeeper.db-wal", "mediakeeper.db-shm"} {
 		if exists(filepath.Join(from, name)) && !exists(filepath.Join(to, name)) {
 			names = append(names, name)
 		}
@@ -287,6 +306,8 @@ func saveConfig(c Config) error {
 	sub("Also be a DLNA server (it has no login: the whole local network can watch).", "dlna", s.DLNA, s.DLNA != nil, "true")
 	sub("Let the web interface be watched without signing in.", "guests", s.Guests, s.Guests != nil, "true")
 	sub("Do not write tags into the files of downloads.", "no_tags", s.NoTags, s.NoTags, "false")
+	sub("The database of accounts, ratings, watchlists and history; mediakeeper.db next to this file by default.",
+		"database", s.Database, s.Database != "", "/var/lib/mediakeeper/mediakeeper.db")
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

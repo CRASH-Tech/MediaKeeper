@@ -66,10 +66,11 @@ type hlsManager struct {
 	s        *Server
 	mu       sync.Mutex
 	sessions map[string]*hlsSession
+	vods     map[string]*vodSession // whole-film conversions (vod.go)
 }
 
 func newHLSManager(s *Server) *hlsManager {
-	return &hlsManager{s: s, sessions: map[string]*hlsSession{}}
+	return &hlsManager{s: s, sessions: map[string]*hlsSession{}, vods: map[string]*vodSession{}}
 }
 
 // start launches a conversion of the video from the given second. A user
@@ -189,9 +190,16 @@ func (m *hlsManager) stopAll() {
 	for _, sess := range m.sessions {
 		all = append(all, sess)
 	}
+	var vods []*vodSession
+	for _, v := range m.vods {
+		vods = append(vods, v)
+	}
 	m.mu.Unlock()
 	for _, sess := range all {
 		m.stop(sess)
+	}
+	for _, v := range vods {
+		v.stop()
 	}
 }
 
@@ -249,6 +257,19 @@ func (m *hlsManager) api(w http.ResponseWriter, r *http.Request, u *User, parts 
 	if len(parts) > 2 {
 		name = filepath.Base(parts[2])
 	}
+	m.serve(w, r, sess, name)
+}
+
+// session finds a running session by its identifier, which is long and
+// random: whoever has it was given it by the server.
+func (m *hlsManager) session(id string) *hlsSession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessions[id]
+}
+
+// serve answers for the playlist or a segment of a session.
+func (m *hlsManager) serve(w http.ResponseWriter, r *http.Request, sess *hlsSession, name string) {
 	sess.mu.Lock()
 	sess.last = time.Now()
 	sess.mu.Unlock()

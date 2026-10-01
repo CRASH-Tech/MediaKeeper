@@ -248,7 +248,13 @@ func (s *Server) saveShow(show *CatShow, dir string, m metaSave) (map[string]any
 		}
 		tags = fileTags.write(s, jobs...)
 	}
-	return map[string]any{"ok": true, "tags": tags, "problems": problems, "id": s.showIn(dir, show.ID)}, nil
+	// A series described for the first time is known by its folder from now
+	// on: what users did with it follows.
+	id := s.showIn(dir, show.ID)
+	if id != show.ID {
+		s.auth.Moved(map[string]string{show.ID: id})
+	}
+	return map[string]any{"ok": true, "tags": tags, "problems": problems, "id": id}, nil
 }
 
 // refileShow files the series anew after the catalogue entry the fields

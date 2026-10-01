@@ -43,8 +43,10 @@ type Server struct {
 	dlna   *DLNAServer
 	ffmpeg string
 
-	transcodes  chan struct{} // limits simultaneous ffmpeg processes
-	conversions viewerStreams // the converted streams each viewer has open
+	debug       *debugLog      // with -debug: what the Jellyfin apps ask and get
+	plays       jfPlaySessions // what the Jellyfin apps were told to play
+	transcodes  chan struct{}  // limits simultaneous ffmpeg processes
+	conversions viewerStreams  // the converted streams each viewer has open
 	hls         *hlsManager
 	screens     *screenMaker
 	organizing  sync.Mutex // one change of the library at a time
@@ -55,17 +57,22 @@ type Server struct {
 
 // ServerOptions are the command-line choices for -serve.
 type ServerOptions struct {
-	Roots  []Root
-	Name   string
-	Port   int
-	DLNA   bool
-	Guests bool
-	NoTags bool
-	Config Config
+	Debug    bool // log what the Jellyfin apps ask and get (jellyfin-debug.log)
+	Roots    []Root
+	Database string // the SQLite file of accounts and watch states; "" for the default
+	Name     string
+	Port     int
+	DLNA     bool
+	Guests   bool
+	NoTags   bool
+	Config   Config
 }
 
 func NewServer(o ServerOptions, log func(string, ...any)) (*Server, error) {
-	auth, err := OpenAuth(filepath.Join(filepath.Dir(configPath()), "server.json"))
+	if o.Database == "" {
+		o.Database = databasePath("", "")
+	}
+	auth, err := OpenAuth(o.Database, filepath.Join(filepath.Dir(configPath()), "server.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +82,11 @@ func NewServer(o ServerOptions, log func(string, ...any)) (*Server, error) {
 	s := &Server{roots: o.Roots, root: o.Roots[0].Path, name: o.Name, port: o.Port, cfg: o.Config, noTags: o.NoTags, guests: o.Guests, log: log,
 		prober: newProber(), auth: auth, transcodes: make(chan struct{}, 2), failures: map[string][]time.Time{}}
 	s.ffmpeg, _ = exec.LookPath("ffmpeg")
+	if o.Debug {
+		if s.debug, err = openDebugLog(); err != nil {
+			return nil, err
+		}
+	}
 	s.lib = NewLibrary(o.Roots, s.prober)
 	if _, err := s.lib.Catalog(); err != nil {
 		return nil, err
@@ -157,6 +169,49 @@ func (v *viewerStreams) begin(parent context.Context, viewer string) (ctx contex
 	}
 }
 
+// moved follows files the server renamed (from the old path to the new):
+// what users did with those titles — watch states, ratings, watchlists,
+// history — moves to their new identifiers, which follow the file names,
+// and a download that brought a file still leads to it. before is the
+// catalogue as it was before the change.
+func (s *Server) moved(before *Catalog, paths map[string]string) {
+	if len(paths) == 0 {
+		return
+	}
+	for from, to := range paths {
+		if s.dl != nil {
+			s.dl.moved(from, to)
+		}
+	}
+	after, err := s.lib.Catalog()
+	if err != nil || before == nil {
+		return
+	}
+	old, now := before.byPath(), after.byPath()
+	ids := map[string]string{}
+	for from, to := range paths {
+		a, b := old[from], now[to]
+		if a == nil || b == nil {
+			continue
+		}
+		ids[a.ID] = b.ID
+		if a.Show != nil && b.Show != nil {
+			ids[a.Show.ID] = b.Show.ID
+		}
+	}
+	s.auth.Moved(ids)
+}
+
+// viewing is what the history keeps of a video.
+func viewing(it *CatItem) Viewing {
+	v := Viewing{ItemID: it.ID, Kind: it.Kind, Title: it.Title, Year: it.Year}
+	if it.Kind == kindEpisode {
+		v.ShowID, v.ShowTitle, v.Season, v.Episode = it.Show.ID, it.Show.Title, it.Season.Number, it.Episode
+		v.Year = it.Show.Year
+	}
+	return v
+}
+
 // rootFor is the library folder a file lies in.
 func (s *Server) rootFor(path string) Root {
 	if r, ok := rootOf(s.roots, path); ok {
@@ -210,6 +265,10 @@ func (s *Server) Handler() http.Handler {
 					return
 				}
 			}
+		}
+		if s.debug != nil {
+			s.debugJellyfin(w, r, s.jellyfin)
+			return
 		}
 		s.jellyfin(w, r)
 	})
@@ -416,6 +475,9 @@ func Serve(ui *UI, o ServerOptions) error {
 		ui.Printf("  http://%s:%d/  (%s)\n", i.ip, o.Port, i.ifi.Name)
 	}
 	ui.Printf("Open the address in a browser, or add it as a server in a Jellyfin app.\n")
+	if s.debug != nil {
+		ui.Printf("%s\n", ui.Yellow("Debug: every request of a Jellyfin app is logged here, and in full in "+s.debug.path))
+	}
 
 	var discovery *ssdpServer
 	if s.dlna != nil {
@@ -435,17 +497,6 @@ func Serve(ui *UI, o ServerOptions) error {
 	}
 	ui.Printf("Press Ctrl+C to stop.\n\n")
 
-	go func() { // watch progress is written out in the background
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(10 * time.Second):
-				s.auth.Save()
-			}
-		}
-	}()
-
 	go s.screens.run()
 	server := &http.Server{Handler: s.Handler()}
 	failed := make(chan error, 1)
@@ -461,7 +512,7 @@ func Serve(ui *UI, o ServerOptions) error {
 	s.dl.Close()
 	s.hls.stopAll()
 	s.screens.close()
-	s.auth.Save()
+	defer s.auth.Close()
 	shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	server.Shutdown(shutdown)

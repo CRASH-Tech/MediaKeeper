@@ -239,6 +239,7 @@ func (s *Server) fix(id string, req resolveRequest, opt fixOptions) (string, err
 			dst = it.Move.Dst
 		}
 	}
+	before, _ := s.lib.Catalog()
 	for _, path := range generated {
 		if opt.keepArt && strings.HasSuffix(path, ".jpg") && !strings.HasSuffix(path, "-thumb.jpg") {
 			continue
@@ -247,11 +248,13 @@ func (s *Server) fix(id string, req resolveRequest, opt fixOptions) (string, err
 	}
 	a.Apply(plan)
 	s.refresh()
-	for _, it := range plan.Items { // a download that brought these files still leads to them
-		if s.dl != nil && it.Move.Src != "" && !it.IsDir {
-			s.dl.moved(it.From, it.Move.Dst)
+	moves := map[string]string{}
+	for _, it := range plan.Items {
+		if it.Move.Src != "" && !it.IsDir && exists(it.Move.Dst) {
+			moves[it.From] = it.Move.Dst
 		}
 	}
+	s.moved(before, moves)
 	if err := firstFailure(out.String()); err != nil {
 		return "", err
 	}

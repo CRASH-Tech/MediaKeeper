@@ -88,8 +88,8 @@ func TestConfigLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.auth.SetUser("boss", "boss-password", true)
-	if !fileExists(filepath.Join(dir, "server.json")) {
-		t.Errorf("the accounts are not next to the settings")
+	if !fileExists(filepath.Join(dir, "mediakeeper.db")) {
+		t.Errorf("the database is not next to the settings")
 	}
 	s.dl.Close()
 

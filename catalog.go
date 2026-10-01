@@ -259,6 +259,15 @@ func (cat *Catalog) sort() {
 	}
 }
 
+// byPath indexes the videos by their files.
+func (cat *Catalog) byPath() map[string]*CatItem {
+	out := make(map[string]*CatItem, len(cat.items))
+	for _, it := range cat.items {
+		out[it.Path] = it
+	}
+	return out
+}
+
 // Episodes returns all episodes of the show in order.
 func (s *CatShow) Episodes() []*CatItem {
 	var out []*CatItem
@@ -316,6 +325,11 @@ func (l *Library) Duration(it *CatItem) time.Duration {
 		return info.Duration
 	}
 	return time.Duration(it.Runtime) * time.Minute
+}
+
+// ProbeNow is Probe for a file whose tracks must be known right away.
+func (l *Library) ProbeNow(it *CatItem) probeInfo {
+	return l.prober.now(it.Path, it.Size, it.ModTime)
 }
 
 func (l *Library) Probe(it *CatItem) probeInfo {

@@ -149,6 +149,14 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch parts[0] {
+	case "mine":
+		s.mineAPI(w, r, cat, u, arg(1))
+		return
+	case "history":
+		s.historyAPI(w, r, cat, u, arg(1))
+		return
+	}
+	switch parts[0] {
 	case "library":
 		writeJSON(w, http.StatusOK, s.libraryJSON(cat, u))
 	case "image":
@@ -189,7 +197,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			} else if req.Played != nil { // marked by hand
 				s.auth.Update(u.ID, it.ID, func(p *Progress) { p.Played, p.Position = *req.Played, 0 })
 			} else {
-				s.auth.Watch(u.ID, it.ID, req.Position, s.lib.Duration(it).Seconds())
+				s.auth.Watch(u.ID, viewing(it), req.Position, s.lib.Duration(it).Seconds())
 			}
 			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 		}
@@ -245,6 +253,7 @@ func (s *Server) itemJSON(it *CatItem, u *User, details bool) map[string]any {
 		"duration": s.lib.Duration(it).Seconds(), "position": p.Position, "played": p.Played,
 		"added": it.ModTime.Unix(), "rating": it.Rating, "genres": it.Genres,
 	}
+	mineJSON(m, p)
 	if it.Kind == kindEpisode {
 		m["episode"], m["episodeEnd"], m["season"] = it.Episode, it.EpisodeEnd, it.Season.Number
 		m["show"], m["showId"] = it.Show.Title, it.Show.ID
@@ -323,6 +332,7 @@ func (s *Server) libraryJSON(cat *Catalog, u *User) map[string]any {
 			"originalTitle": show.OriginalTitle, "mpaa": show.MPAA, "date": show.Date, "status": show.Status,
 			"studios": show.Studios, "cast": people(show.Cast), "imdb": show.IMDb,
 		})
+		mineJSON(shows[len(shows)-1], s.auth.Progress(u.ID, show.ID))
 	}
 	return map[string]any{"name": s.name, "movies": movies, "shows": shows}
 }

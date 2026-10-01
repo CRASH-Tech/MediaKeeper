@@ -431,10 +431,11 @@ func (s *Server) renameMovie(it *CatItem, title string, year int) (string, error
 		return it.Path, fmt.Errorf("%s is already in the library", a.rel(a.root, item.Move.Dst))
 	}
 	plan.add(item)
+	before, _ := s.lib.Catalog()
 	a.Apply(plan)
 	s.refresh()
-	if s.dl != nil && exists(item.Move.Dst) {
-		s.dl.moved(item.From, item.Move.Dst)
+	if exists(item.Move.Dst) {
+		s.moved(before, map[string]string{item.From: item.Move.Dst})
 	}
 	if err := firstFailure(out.String()); err != nil {
 		return it.Path, err

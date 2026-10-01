@@ -34,7 +34,7 @@ func serverFixture(t *testing.T) (*Server, *httptest.Server) {
 		}
 	}
 	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(func() { srv.Close(); s.dl.Close() })
+	t.Cleanup(func() { srv.Close(); s.dl.Close(); s.hls.stopAll() }) // conversions leave folders in the temporary directory
 	return s, srv
 }
 
@@ -288,7 +288,8 @@ func TestJellyfinAPI(t *testing.T) {
 	}
 
 	var info struct{ Id, ProductName, Version string }
-	if call("GET", "/System/Info/Public", nil, &info); info.ProductName != "Jellyfin Server" || len(info.Id) != 32 {
+	// Current clients (Swiftfin) refuse a server older than Jellyfin 12.0.
+	if call("GET", "/System/Info/Public", nil, &info); info.ProductName != "Jellyfin Server" || len(info.Id) != 32 || info.Version != "12.0.0" {
 		t.Fatalf("public info: %+v", info)
 	}
 	if status := call("GET", "/Users/Me", nil, nil); status != http.StatusUnauthorized {
@@ -361,11 +362,29 @@ func TestJellyfinAPI(t *testing.T) {
 	if status, _ := c.get("/Videos/" + movie.Id + "/stream"); status != http.StatusUnauthorized {
 		t.Errorf("stream without a token: %d", status)
 	}
-	if status, _ := c.do("GET", "/Videos/"+movie.Id+"/master.m3u8", nil, map[string]string{"X-Emby-Authorization": auth}); status != 404 {
-		t.Errorf("HLS is not offered, got %d", status)
+	if status, _ := c.get("/Videos/" + movie.Id + "/master.m3u8"); status != http.StatusUnauthorized {
+		t.Errorf("a conversion without a login or a play session: %d", status)
 	}
 	if status, body := c.get("/Items/" + movie.Id + "/Images/Primary?maxWidth=200"); status != 200 || body != "POSTER" {
 		t.Errorf("image: %d %q", status, body)
+	}
+	// Clients ask with HEAD first, for the size, as Jellyfin 12 answers it.
+	for _, path := range []string{"/Items/" + movie.Id + "/Download", "/Items/" + movie.Id + "/File", "/Videos/" + movie.Id + "/stream"} {
+		req, _ := http.NewRequest("HEAD", c.base+path+"?api_key="+login.AccessToken, nil)
+		resp, err := c.http.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 || resp.ContentLength != 10 {
+			t.Errorf("HEAD %s: %d, length %d", path, resp.StatusCode, resp.ContentLength)
+		}
+	}
+	for _, path := range []string{"/Items/" + movie.Id + "/Images/Primary", "/Items/" + movie.Id + "/Images/Primary/0"} {
+		req, _ := http.NewRequest("HEAD", c.base+path, nil)
+		if resp, err := c.http.Do(req); err != nil || resp.StatusCode != 200 {
+			t.Errorf("HEAD %s: %v %v", path, resp, err)
+		}
 	}
 
 	// Series -> seasons -> episodes.
@@ -719,6 +738,21 @@ func TestIcons(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "image/") {
 			t.Errorf("%s: %d %s", path, resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+	}
+}
+
+// The debug log blanks out tokens and passwords, and only those.
+func TestHideSecrets(t *testing.T) {
+	for in, want := range map[string]string{
+		`/Videos/1/stream?static=true&api_key=abc123&x=1`:            `/Videos/1/stream?static=true&api_key=***&x=1`,
+		`{"Username":"admin","Pw":"secret"}`:                         `{"Username":"admin","Pw":"***"}`,
+		`{"AccessToken":"tok","HasPassword":true}`:                   `{"AccessToken":"***","HasPassword":true}`,
+		`MediaBrowser Client="Swiftfin", Token="tok"`:                `MediaBrowser Client="Swiftfin", Token="***"`,
+		`{"EnableLocalPassword":false,"HasConfiguredPassword":true}`: `{"EnableLocalPassword":false,"HasConfiguredPassword":true}`,
+	} {
+		if got := hideSecrets(in); got != want {
+			t.Errorf("%s\n  got  %s\n  want %s", in, got, want)
 		}
 	}
 }

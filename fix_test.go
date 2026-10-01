@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -449,5 +452,168 @@ func TestSeekFreesTheViewersSlot(t *testing.T) {
 	defer done()
 	if s.takeSlot(ctx) {
 		t.Errorf("a third viewer got a slot while two others are watching")
+	}
+}
+
+// A Jellyfin app gets a file its player takes as it is, any other one
+// converted as HLS; the players it hands the address to bring no login, and
+// the play session in the address lets them in — to that video only.
+func TestJellyfinPlayback(t *testing.T) {
+	ffmpeg, err1 := exec.LookPath("ffmpeg")
+	ffprobe, err2 := exec.LookPath("ffprobe")
+	if err1 != nil || err2 != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	s, srv := serverFixture(t) // (it empties PATH)
+	s.ffmpeg, s.prober.tool = ffmpeg, ffprobe
+	film := filepath.Join(s.root, "Clip (2020)", "Clip (2020).mkv")
+	os.MkdirAll(filepath.Dir(film), 0o755)
+	if out, err := exec.Command(ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=d=40:s=320x240:r=25", "-f", "lavfi", "-i", "sine=d=40",
+		"-c:v", "libx264", "-g", "50", "-c:a", "ac3", "-shortest", film).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	s.refresh()
+	cat, _ := s.lib.Catalog()
+	var clip, other string
+	for _, it := range cat.Movies {
+		if it.Title == "Clip" {
+			clip = it.ID
+		} else {
+			other = it.ID
+		}
+	}
+
+	b := newBrowser(t, srv, "")
+	app := `MediaBrowser Client="Swiftfin tvOS", Device="Apple TV", DeviceId="tv1", Version="1.6.1"`
+	var login struct{ AccessToken string }
+	_, body := b.do("POST", "/Users/AuthenticateByName", map[string]string{"Username": "kid", "Pw": "kid-password"}, map[string]string{"Authorization": app})
+	mustUnmarshal(t, body, &login)
+	auth := map[string]string{"Authorization": app + `, Token="` + login.AccessToken + `"`}
+	type source struct {
+		SupportsDirectPlay, SupportsTranscoding bool
+		TranscodingUrl                          string
+	}
+	type answer struct {
+		MediaSources  []source
+		PlaySessionId string
+	}
+	info := func(profile map[string]any) answer {
+		t.Helper()
+		var a answer
+		status, body := b.do("POST", "/Items/"+clip+"/PlaybackInfo", map[string]any{"DeviceProfile": profile}, auth)
+		if status != 200 {
+			t.Fatalf("PlaybackInfo: %d %s", status, body)
+		}
+		mustUnmarshal(t, body, &a)
+		return a
+	}
+	native := map[string]any{"DirectPlayProfiles": []map[string]string{{"Type": "Video", "Container": "mp4,m4v", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3"}}}
+	vlc := map[string]any{"DirectPlayProfiles": []map[string]string{{"Type": "Video", "VideoCodec": "h264,hevc,mpeg4", "AudioCodec": "aac,ac3,dts"}}}
+
+	// The system player takes no Matroska: converted.
+	conv := info(native)
+	if src := conv.MediaSources[0]; src.SupportsDirectPlay || !src.SupportsTranscoding || !strings.Contains(src.TranscodingUrl, "master.m3u8") || !strings.Contains(src.TranscodingUrl, conv.PlaySessionId) {
+		t.Fatalf("for the system player: %+v", conv)
+	}
+	// VLC takes it as it is.
+	direct := info(vlc)
+	if src := direct.MediaSources[0]; !src.SupportsDirectPlay || src.TranscodingUrl != "" {
+		t.Fatalf("for VLC: %+v", direct)
+	}
+
+	// The file, as the player asks for it: no login, the play session.
+	plain := newBrowser(t, srv, "")
+	if status, body := plain.do("GET", "/Videos/"+clip+"/stream?static=true&playSessionId="+direct.PlaySessionId, nil, map[string]string{"Range": "bytes=0-3"}); status != 206 || len(body) != 4 {
+		t.Errorf("by the play session: %d", status)
+	}
+	for name, path := range map[string]string{
+		"no play session":    "/Videos/" + clip + "/stream?static=true",
+		"a made-up one":      "/Videos/" + clip + "/stream?static=true&playSessionId=0123456789abcdef0123456789abcdef",
+		"another video's":    "/Videos/" + other + "/stream?static=true&playSessionId=" + direct.PlaySessionId,
+		"a conversion of it": "/Videos/" + other + "/master.m3u8?PlaySessionId=" + conv.PlaySessionId,
+	} {
+		if status, _ := plain.get(path); status != http.StatusUnauthorized {
+			t.Errorf("%s: %d, want 401", name, status)
+		}
+	}
+
+	// The conversion: a master playlist, its media playlist, a segment.
+	url := conv.MediaSources[0].TranscodingUrl
+	url = url[:strings.Index(url, "&api_key=")] // the player may well drop the login
+	status, master := plain.get(url)
+	if status != 200 || !strings.Contains(master, "#EXT-X-STREAM-INF:BANDWIDTH=") {
+		t.Fatalf("master playlist: %d %s", status, master)
+	}
+	lines := strings.Split(strings.TrimSpace(master), "\n")
+	media := "/Videos/" + clip + "/" + strings.TrimSpace(lines[len(lines)-1])
+	status, playlist := plain.get(media)
+	// The whole film, from the start: the player can seek anywhere.
+	if status != 200 || !strings.Contains(playlist, "#EXT-X-PLAYLIST-TYPE:VOD") || !strings.HasSuffix(playlist, "#EXT-X-ENDLIST\n") ||
+		strings.Count(playlist, "#EXTINF") != 7 { // key frames every 2 s, segments from 6 s: 0, 6, 12 ... 36
+		t.Fatalf("media playlist %s: %d\n%s", media, status, playlist)
+	}
+	if again, _ := plain.get(url); again != 200 || len(s.hls.vods) != 1 {
+		t.Errorf("asked again: %d, %d conversions", again, len(s.hls.vods))
+	}
+	segment := func(n int) string { return media[:strings.LastIndex(media, "/")+1] + fmt.Sprintf("seg%05d.ts", n) }
+	checkSegments(t, ffprobe, plain, segment, []float64{0, 6, 12, 18, 24, 30, 36}, 6, 0, 2) // a jump to the end, then the start
+	// The app stops: the conversion ends.
+	if status, _ := b.do("DELETE", "/Videos/ActiveEncodings?DeviceId=tv1&PlaySessionId="+conv.PlaySessionId, nil, auth); status != 204 || len(s.hls.vods) != 0 {
+		t.Errorf("stop: %d, %d conversions left", status, len(s.hls.vods))
+	}
+
+	// A video that is re-encoded (MPEG-4 in AVI) gets a key frame every
+	// 6 s and is cut there.
+	avi := filepath.Join(s.root, "Old (1999)", "Old (1999).avi")
+	os.MkdirAll(filepath.Dir(avi), 0o755)
+	if out, err := exec.Command(ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=d=20:s=320x240:r=25", "-f", "lavfi", "-i", "sine=d=20",
+		"-c:v", "mpeg4", "-c:a", "mp3", "-shortest", avi).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	s.refresh()
+	cat, _ = s.lib.Catalog()
+	var old string
+	for _, it := range cat.Movies {
+		if it.Title == "Old" {
+			old = it.ID
+		}
+	}
+	var a answer
+	_, body = b.do("POST", "/Items/"+old+"/PlaybackInfo", map[string]any{"DeviceProfile": native}, auth)
+	mustUnmarshal(t, body, &a)
+	if a.MediaSources[0].TranscodingUrl == "" {
+		t.Fatalf("the AVI is not converted: %+v", a)
+	}
+	_, master = plain.get(a.MediaSources[0].TranscodingUrl)
+	lines = strings.Split(strings.TrimSpace(master), "\n")
+	media = "/Videos/" + old + "/" + strings.TrimSpace(lines[len(lines)-1])
+	if _, playlist = plain.get(media); strings.Count(playlist, "#EXTINF:6.000") != 3 {
+		t.Fatalf("re-encoded playlist:\n%s", playlist)
+	}
+	checkSegments(t, ffprobe, plain, segment, []float64{0, 6, 12, 18}, 3, 0, 1)
+}
+
+// checkSegments fetches segments in the given order and checks that each
+// begins at its time in the playlist, whichever run of ffmpeg made it.
+func checkSegments(t *testing.T, ffprobe string, b *browser, url func(int) string, cuts []float64, order ...int) {
+	t.Helper()
+	for _, n := range order {
+		status, body := b.get(url(n))
+		if status != 200 || len(body) < 1000 {
+			t.Errorf("segment %d: %d, %d bytes", n, status, len(body))
+			continue
+		}
+		file := filepath.Join(t.TempDir(), "seg.ts")
+		os.WriteFile(file, []byte(body), 0o644)
+		out, _ := exec.Command(ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time", "-of", "csv=p=0", file).Output()
+		first := math.Inf(1)
+		for _, line := range strings.Fields(string(out)) {
+			if v, err := strconv.ParseFloat(strings.TrimSuffix(line, ","), 64); err == nil {
+				first = math.Min(first, v)
+			}
+		}
+		if math.Abs(first-cuts[n]) > 0.25 {
+			t.Errorf("segment %d begins at %.3f s, the playlist says %.3f s", n, first, cuts[n])
+		}
 	}
 }

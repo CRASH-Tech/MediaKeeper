@@ -74,7 +74,7 @@ async function render() {
   // Without an account one may watch (if the server allows it), not manage.
   if (!me || (page === "login" && me.guest)) return renderLogin();
   try {
-    if (!library || ["movies", "shows", "movie", "show", "browse"].includes(page)) library = await api("library");
+    if (!library || ["movies", "shows", "movie", "show", "browse", "mine"].includes(page)) library = await api("library");
   } catch (err) {
     if (!me) return;
     return shell(page, h("p", { class: "error" }, err.message));
@@ -87,6 +87,7 @@ async function render() {
     case "browse": return backAtTitle(renderBrowse(arg, decodeURIComponent(rest.join("/"))));
     case "downloads": return me.admin ? renderDownloads() : (location.hash = "#movies");
     case "users": return me.admin ? renderUsers() : (location.hash = "#movies");
+    case "mine": return me.guest ? (location.hash = "#login") : renderMine(arg || "continue");
     default: return backAtTitle(renderList("movies", library.movies, query));
   }
 }
@@ -99,6 +100,7 @@ const icons = {
   users: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
   play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" fill="currentColor" stroke="none"/></svg>',
   fullscreen: '<svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>',
+  mine: '<svg viewBox="0 0 24 24"><path d="M6.5 3.5h11v17l-5.5-4-5.5 4z"/></svg>',
   pause: '<svg viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor" stroke="none"/></svg>',
   sound: '<svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M15.5 9a4.5 4.5 0 0 1 0 6M18 6.5a8 8 0 0 1 0 11"/></svg>',
   muted: '<svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>',
@@ -123,7 +125,7 @@ function shell(page, ...content) {
   // The sections: in the header on a wide screen, in a floating tab bar at
   // the bottom on a phone.
   const sections = cls => h("nav", { class: cls },
-    link("movies", "Movies"), link("shows", "Shows"),
+    link("movies", "Movies"), link("shows", "Shows"), !me.guest && link("mine", "My"),
     me.admin && link("downloads", "Downloads", h("span", { class: "badge hidden attention" })),
     me.admin && link("users", "Users"));
   const search = h("input", {
@@ -212,9 +214,11 @@ function grid(items, emptyText) {
     const watched = isShow(x) ? episodesOf(x).every(e => e.played) : x.played;
     const card = h("a", { class: "card", href: `#${isShow(x) ? "show" : "movie"}/${x.id}`, onclick: () => openedFrom(x) },
       h("div", { class: "poster", style: x.poster ? `background-image:${image(x.id, "poster")}` : "" },
-        !x.poster && x.title, watched && h("span", { class: "seen", title: "Watched" }, "✓"), !isShow(x) && progressBar(x)),
+        !x.poster && x.title, watched && h("span", { class: "seen", title: "Watched" }, "✓"), !isShow(x) && progressBar(x),
+        x.planned && h("span", { class: "ribbon", title: "On your watchlist" }, icon("mine"))),
       h("div", { class: "title" }, x.title),
-      h("div", { class: "sub" }, [!sameText(x.localTitle, x.title) && x.localTitle, x.year || null, isShow(x) && "series"].filter(Boolean).join(" · ")));
+      h("div", { class: "sub" }, [!sameText(x.localTitle, x.title) && x.localTitle, x.year || null, isShow(x) && "series",
+        x.myRating && "★ " + starText(x.myRating)].filter(Boolean).join(" · ")));
     card.dataset.text = `${x.title} ${x.localTitle || ""} ${x.originalTitle || ""} ${x.year || ""}`.toLowerCase();
     card.dataset.id = x.id;
     return card;
@@ -264,6 +268,7 @@ function renderList(page, items, query) {
     year: (a, b) => (b.year || 0) - (a.year || 0) || a.title.localeCompare(b.title),
     added: (a, b) => (b.added || 0) - (a.added || 0),
     rating: (a, b) => (b.rating || 0) - (a.rating || 0),
+    mine: (a, b) => (b.myRating || 0) - (a.myRating || 0) || a.title.localeCompare(b.title),
   };
   shown.sort(sorters[order] || sorters.title);
 
@@ -285,7 +290,7 @@ function renderList(page, items, query) {
     return select;
   });
   const sort = h("select", { "aria-label": "Order", class: "sort", onchange: () => go("sort", sort.value === "title" ? "" : sort.value) },
-    [["title", "By title"], ["year", "Newest first"], ["added", "Recently added"], ["rating", "Best rated"]]
+    [["title", "By title"], ["year", "Newest first"], ["added", "Recently added"], ["rating", "Best rated"], !me.guest && ["mine", "My rating"]].filter(Boolean)
       .map(([v, label]) => h("option", { value: v, selected: v === order }, label)));
   shell(page,
     items.length > 0 && filterBar(selects, sort, chosen.length, "#" + page),
@@ -318,7 +323,18 @@ const facets = {
   director: { label: "Director", plural: "All directors", values: x => x.directors },
   writer: { label: "Writer", plural: "All writers", values: x => x.writers },
   studio: { label: "Studio", plural: "All studios", values: x => x.studios },
+  mine: { label: "Mine", plural: "Mine: everything", values: x => mineTags(x) },
 };
+
+// mineTags are the signed-in user's own groups of a title.
+function mineTags(x) {
+  if (!me || me.guest) return [];
+  const episodes = isShow(x) ? episodesOf(x) : null;
+  const played = episodes ? episodes.length > 0 && episodes.every(e => e.played) : x.played;
+  const started = episodes ? !played && episodes.some(e => e.played || e.position > 0) : !x.played && x.position > 0;
+  return [x.planned && "On my watchlist", played ? "Watched" : "Not watched", started && "In progress",
+    x.myRating && "Rated by me", x.favorite && "My favorites"].filter(Boolean);
+}
 const browseLink = (facet, value) => `#browse/${facet}/${encodeURIComponent(value)}`;
 const chip = (facet, value, note) => h("a", { class: "chip", href: browseLink(facet, value) }, value, note && h("span", { class: "note" }, note));
 
@@ -381,7 +397,8 @@ function hero(x, ...rest) {
         h("h1", {}, fullTitle(x)),
         x.tagline && h("p", { class: "tagline" }, x.tagline),
         h("div", { class: "meta" }, meta.map((m, i) => [i > 0 && " · ", m])),
-        ...rest)));
+        ...rest,
+        mineRow(x))));
 }
 
 function playLabel(x) {
@@ -480,6 +497,174 @@ function renderShow(id) {
         h("div", { class: "plot" }, e.plot)),
       !me.guest && h("button", { class: "small", onclick: ev => { ev.stopPropagation(); toggleWatched(e); } }, e.played ? "Unwatch" : "Watched"))),
     h("div", { class: "details glass" }, details(show)));
+}
+
+// ------------------------------------------------------------------ mine
+
+// A rating is kept from 1 to 10 and shown as five stars with halves.
+const starText = r => (r / 2).toString().replace(".5", "½");
+
+// stars is the user's rating of a title: hover to see, click to set. Most
+// of a star gives the whole star; only its left edge gives a half, so that
+// a click in the middle of a star is not taken for half a point less.
+function stars(value, onChange) {
+  const box = h("div", { class: "stars", role: "slider", tabIndex: 0, "aria-label": "Your rating", "aria-valuemin": 0, "aria-valuemax": 10 });
+  const draw = v => {
+    box.setAttribute("aria-valuenow", v);
+    box.replaceChildren(...[1, 2, 3, 4, 5].map(i => h("span", { class: "star " + ["", "half", "full"][Math.max(0, Math.min(2, v - (i - 1) * 2))] }, "★")));
+  };
+  const at = e => { // the rating under the pointer
+    const r = box.getBoundingClientRect();
+    const x = Math.max(0, Math.min(4.999, (e.clientX - r.left) / r.width * 5)); // 0..5 across the stars
+    const star = Math.floor(x) + 1, within = x - Math.floor(x);
+    return within < 0.4 ? star * 2 - 1 : star * 2;
+  };
+  box.addEventListener("mousemove", e => draw(at(e)));
+  box.addEventListener("mouseleave", () => draw(value));
+  box.addEventListener("click", e => {
+    const v = at(e);
+    if (v !== value) onChange(v);
+  });
+  box.addEventListener("keydown", e => {
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") { e.preventDefault(); onChange(Math.min(10, value + 1)); }
+    if (e.key === "ArrowLeft" || e.key === "ArrowDown") { e.preventDefault(); onChange(Math.max(0, value - 1)); }
+  });
+  draw(value);
+  return box;
+}
+
+// mineRow is the signed-in user's own marks of a title on its page: the
+// rating, the watchlist, favourite and a note.
+function mineRow(x) {
+  if (!me || me.guest) return null;
+  const row = h("div", { class: "mine" });
+  let editing = false, sent = 0;
+  // A change shows at once; the server's answer only counts if it is the
+  // answer to the latest change (quick clicks may be answered out of order).
+  const set = async (body, shown) => {
+    const before = { myRating: x.myRating, planned: x.planned, favorite: x.favorite, note: x.note };
+    const mine = ++sent;
+    if (shown) { Object.assign(x, shown); draw(); }
+    try {
+      const r = await api("mine/" + x.id, { json: body });
+      if (mine !== sent) return;
+      Object.assign(x, { myRating: r.myRating || 0, planned: r.planned || 0, favorite: !!r.favorite, note: r.note || "" });
+      editing = false;
+      draw();
+    } catch (err) {
+      if (mine === sent) { Object.assign(x, before); draw(); }
+      alert(err.message);
+    }
+  };
+  function draw() {
+    const note = h("textarea", { rows: 3, value: x.note || "", placeholder: "Only you see this note", "aria-label": "Your note" });
+    row.replaceChildren(
+      h("div", { class: "mine-bar" },
+        h("span", { class: "dim" }, "Your rating"),
+        stars(x.myRating || 0, v => set({ rating: v }, { myRating: v })),
+        x.myRating ? [h("span", { class: "dim" }, starText(x.myRating)),
+          h("button", { class: "clear-rating", title: "Remove your rating", "aria-label": "Remove your rating", onclick: () => set({ rating: 0 }, { myRating: 0 }) }, "×")] : null,
+        h("span", { class: "grow" }),
+        h("button", { class: "small" + (x.planned ? " on" : ""), onclick: () => set({ planned: !x.planned }, { planned: x.planned ? 0 : Math.floor(Date.now() / 1000) }) },
+          icon("mine"), x.planned ? "On your watchlist" : "Watch later"),
+        h("button", { class: "small" + (x.favorite ? " on" : ""), onclick: () => set({ favorite: !x.favorite }, { favorite: !x.favorite }) }, x.favorite ? "♥ Favorite" : "♡ Favorite"),
+        !editing && h("button", { class: "small", onclick: () => { editing = true; draw(); note.focus(); } }, x.note ? "✎ Note" : "✎ Add a note")),
+      editing ? h("div", { class: "note-edit" }, note,
+        h("div", { class: "row" },
+          h("button", { class: "small primary", onclick: () => set({ note: note.value }) }, "Save"),
+          h("button", { class: "small", onclick: () => { editing = false; draw(); } }, "Cancel")))
+        : x.note && h("p", { class: "my-note" }, x.note));
+  }
+  draw();
+  return row;
+}
+
+// renderMine is the user's own page: what they are watching, what they
+// want to watch, what they watched, rated and like.
+async function renderMine(tab) {
+  const titles = [...library.movies, ...library.shows.map(asShow)];
+  const showLast = s => Math.max(0, ...episodesOf(s).map(e => e.lastPlayed || 0));
+  const tabs = [["continue", "Continue"], ["watchlist", "Watchlist"], ["history", "History"], ["rated", "Rated"], ["favorites", "Favorites"]];
+  const bar = h("div", { class: "tabs" }, tabs.map(([id, label]) => h("button", { class: id === tab ? "active" : "", onclick: () => { location.hash = "#mine/" + id; } }, label)));
+  let content;
+  switch (tab) {
+    case "watchlist":
+      content = grid(titles.filter(x => x.planned).sort((a, b) => b.planned - a.planned),
+        "Nothing on your watchlist. “Watch later” on a title's page puts it here.");
+      break;
+    case "rated":
+      content = grid(titles.filter(x => x.myRating).sort((a, b) => b.myRating - a.myRating || a.title.localeCompare(b.title)),
+        "You have not rated anything yet: the stars on a title's page.");
+      break;
+    case "favorites":
+      content = grid(titles.filter(x => x.favorite).sort((a, b) => a.title.localeCompare(b.title)), "No favorites yet.");
+      break;
+    case "history":
+      content = historyList();
+      break;
+    default: {
+      const going = titles.filter(x => mineTags(x).includes("In progress"))
+        .sort((a, b) => (isShow(b) ? showLast(b) : b.lastPlayed || 0) - (isShow(a) ? showLast(a) : a.lastPlayed || 0));
+      content = grid(going, "Nothing started. What you begin to watch shows up here.");
+    }
+  }
+  shell("mine", h("h1", { class: "page-title" }, "My"), scrollingTabs(bar), content);
+}
+
+// historyList is the history of viewings, by day, newest first.
+function historyList() {
+  const box = h("div", { class: "history" });
+  const list = h("div", {});
+  const more = h("button", { class: "hidden", onclick: () => load() }, "Show earlier");
+  let next = "", lastDay = "";
+  const day = t => {
+    const d = new Date(t * 1000), today = new Date();
+    const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+    if (d.toDateString() === today.toDateString()) return "Today";
+    if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+    return d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric" });
+  };
+  const clock = t => new Date(t * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  function entry(e) {
+    const name = e.kind === "episode" ? e.showTitle : e.title;
+    const sub = e.kind === "episode" ? `S${e.season}E${e.episode} · ${e.title}` : e.year || "";
+    const state = e.finished ? "watched to the end" : e.duration ? `stopped at ${Math.round(e.position / e.duration * 100)}%` : "";
+    const row = h("div", { class: "history-entry" },
+      h(e.link ? "a" : "div", { class: "pic" + (e.wide ? " wide" : ""), href: e.link, style: e.image ? `background-image:url("${e.image}")` : "" }),
+      h("div", { class: "grow" },
+        e.link ? h("a", { class: "name", href: e.link }, name) : h("span", { class: "name" }, name, h("span", { class: "dim" }, " · no longer in the library")),
+        sub && h("div", { class: "dim" }, sub),
+        h("div", { class: "dim" }, [`${clock(e.started)}–${clock(e.ended)}`, minutes(e.watched) || "under a minute", state].filter(Boolean).join(" · "))),
+      h("button", { class: "small", title: "Remove from the history", "aria-label": "Remove from the history", onclick: async () => {
+        try { await api("history/" + e.id, { method: "DELETE" }); row.remove(); } catch (err) { alert(err.message); }
+      } }, "×"));
+    return row;
+  }
+  async function load() {
+    let res;
+    try { res = await api("history" + (next ? "?after=" + next : "")); } catch (err) { return list.append(h("p", { class: "error" }, err.message)); }
+    if (res.stats) {
+      const st = res.stats;
+      box.prepend(h("div", { class: "stats" },
+        [["This month", minutes(st.since) || "—"], ["All time", minutes(st.total) || "—"], ["Titles", st.titles], ["Watched to the end", st.finished]]
+          .map(([k, v]) => h("div", { class: "stat glass" }, h("b", {}, v), h("span", { class: "dim" }, k))),
+        st.total > 0 && h("button", { class: "small danger", onclick: async () => {
+          if (!confirm("Forget your whole history? Ratings, the watchlist and watched marks stay.")) return;
+          await api("history", { method: "DELETE" }); render();
+        } }, "Clear history")));
+      if (!res.entries.length) list.append(h("div", { class: "empty" }, "Nothing watched yet."));
+    }
+    for (const e of res.entries) {
+      const d = day(e.started);
+      if (d !== lastDay) list.append(h("h2", { class: "day" }, lastDay = d));
+      list.append(entry(e));
+    }
+    next = res.next || "";
+    more.classList.toggle("hidden", !next);
+  }
+  load();
+  box.append(list, more);
+  return box;
 }
 
 // --------------------------------------------------- choosing what it is

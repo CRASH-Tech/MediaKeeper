@@ -125,6 +125,8 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	dlna := fs.Bool("dlna", true, "with -serve: also be a DLNA media server (no login, the whole local network can watch)")
 	guests := fs.Bool("guests", true, "with -serve: the web interface can be browsed and watched without signing in")
 	showVersion := fs.Bool("version", false, "print the version and exit")
+	debug := fs.Bool("debug", os.Getenv("MEDIAKEEPER_DEBUG") != "", "with -serve: log every request of the Jellyfin apps, and in full in jellyfin-debug.log next to the settings (also MEDIAKEEPER_DEBUG=1)")
+	dbFlag := fs.String("db", "", "with -serve: the database of accounts, ratings, watchlists and history (default: mediakeeper.db next to the settings; also MEDIAKEEPER_DB)")
 	configFlag := fs.String("config", "", "the settings file, or a folder for config.yaml in it (default: next to the program; also MEDIAKEEPER_CONFIG)")
 	var given []Root
 	fs.Var(rootList{rootMovies, &given}, "movies", "a library folder of movies only; may be repeated")
@@ -207,7 +209,7 @@ func run(args []string, in io.Reader, out io.Writer) error {
 		return err
 	}
 	if *serve {
-		o := ServerOptions{Roots: roots, Name: *name, Port: *port, DLNA: *dlna, Guests: *guests, NoTags: *noTags, Config: cfg}
+		o := ServerOptions{Debug: *debug, Roots: roots, Database: databasePath(*dbFlag, cfg.Server.Database), Name: *name, Port: *port, DLNA: *dlna, Guests: *guests, NoTags: *noTags, Config: cfg}
 		sc := cfg.Server
 		if !set["name"] && sc.Name != "" {
 			o.Name = sc.Name

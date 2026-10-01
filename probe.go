@@ -115,6 +115,19 @@ func (p *prober) get(path string, size int64, mod time.Time) (probeInfo, bool) {
 	return info, ok
 }
 
+// now measures a file at once unless it is known already: something is
+// waiting for the answer.
+func (p *prober) now(path string, size int64, mod time.Time) probeInfo {
+	if info, ok := p.get(path, size, mod); ok || p.tool == "" {
+		return info
+	}
+	info := p.probe(path)
+	p.mu.Lock()
+	p.known[probeJob{path, size, mod}.key()] = info
+	p.mu.Unlock()
+	return info
+}
+
 // request schedules a file that was not measured yet.
 func (p *prober) request(path string, size int64, mod time.Time) {
 	if p.tool == "" {

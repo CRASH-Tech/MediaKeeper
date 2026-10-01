@@ -25,7 +25,9 @@ import (
 // clients rely on it, so both are compared in lower case here.
 
 const (
-	jfVersion  = "10.10.7" // the API level the answers imitate
+	// The API level the answers imitate. Jellyfin dropped the "10." with its
+	// 12.0, and current clients (Swiftfin) refuse servers that report less.
+	jfVersion  = "12.0.0"
 	jfDateTime = "2006-01-02T15:04:05.0000000Z"
 )
 
@@ -354,6 +356,7 @@ func jfBuildRoutes() {
 		jfPublic("GET", "/Items/{id}/Images/{type}", (*jfContext).image),
 		jfPublic("GET", "/Items/{id}/Images/{type}/{index}", (*jfContext).image),
 		jfPublic("HEAD", "/Items/{id}/Images/{type}", (*jfContext).image),
+		jfPublic("HEAD", "/Items/{id}/Images/{type}/{index}", (*jfContext).image),
 
 		jfR("GET", "/System/Info", (*jfContext).systemInfo),
 		jfR("GET", "/System/Endpoint", func(c *jfContext) { c.json(map[string]bool{"IsLocal": true, "IsInNetwork": true}) }),
@@ -389,10 +392,17 @@ func jfBuildRoutes() {
 		// Playback.
 		jfR("GET", "/Items/{id}/PlaybackInfo", (*jfContext).playbackInfo),
 		jfR("POST", "/Items/{id}/PlaybackInfo", (*jfContext).playbackInfo),
-		jfR("GET", "/Videos/{id}/{file}", (*jfContext).stream),
-		jfR("HEAD", "/Videos/{id}/{file}", (*jfContext).stream),
+		// The players an app hands the address to bring no login: the play
+		// session in the address is checked instead.
+		jfPublic("GET", "/Videos/{id}/{file}", (*jfContext).stream),
+		jfPublic("HEAD", "/Videos/{id}/{file}", (*jfContext).stream),
+		jfPublic("GET", "/Videos/{id}/master.m3u8", (*jfContext).master),
+		jfPublic("GET", "/Videos/{id}/hls/{session}/{file}", (*jfContext).hlsPart),
+		jfR("DELETE", "/Videos/ActiveEncodings", (*jfContext).stopEncodings),
 		jfR("GET", "/Items/{id}/Download", (*jfContext).stream),
+		jfR("HEAD", "/Items/{id}/Download", (*jfContext).stream),
 		jfR("GET", "/Items/{id}/File", (*jfContext).stream),
+		jfR("HEAD", "/Items/{id}/File", (*jfContext).stream),
 		jfR("GET", "/Videos/{id}/{source}/Subtitles/{index}/{file}", (*jfContext).subtitle),
 		jfR("GET", "/Videos/{id}/{source}/Subtitles/{index}/{start}/{file}", (*jfContext).subtitle),
 		jfR("POST", "/Sessions/Playing", (*jfContext).playing),
@@ -649,6 +659,9 @@ func (c *jfContext) userData(e jfEntry) map[string]any {
 		p := c.s.auth.Progress(c.u.ID, e.item.ID)
 		d["PlaybackPositionTicks"] = jfTicks(time.Duration(p.Position * float64(time.Second)))
 		d["PlayCount"], d["IsFavorite"], d["Played"] = p.PlayCount, p.Favorite, p.Played
+		if p.Rating > 0 { // the user's own, as Jellyfin keeps it
+			d["Rating"] = float64(p.Rating)
+		}
 		if total := c.s.lib.Duration(e.item).Seconds(); total > 0 && p.Position > 0 {
 			d["PlayedPercentage"] = p.Position / total * 100
 		}
@@ -658,7 +671,11 @@ func (c *jfContext) userData(e jfEntry) map[string]any {
 		return d
 	case e.show != nil:
 		episodes = e.show.Episodes()
-		d["IsFavorite"] = c.s.auth.Progress(c.u.ID, e.show.ID).Favorite
+		p := c.s.auth.Progress(c.u.ID, e.show.ID)
+		d["IsFavorite"] = p.Favorite
+		if p.Rating > 0 {
+			d["Rating"] = float64(p.Rating)
+		}
 	case e.season != nil:
 		episodes = e.season.Episodes
 	default:
@@ -1161,19 +1178,8 @@ func (c *jfContext) episodes() {
 	c.items(c.dtos(page, c.q.has("fields", "mediasources")), len(list), start)
 }
 
-func (c *jfContext) playbackInfo() {
-	e, ok := c.entry()
-	if !ok || e.item == nil {
-		if ok {
-			c.notFound()
-		}
-		return
-	}
-	c.json(map[string]any{"MediaSources": []any{c.mediaSource(e.item)}, "PlaySessionId": randomHex(16)})
-}
-
-// stream hands out the file itself. Converted streams (HLS playlists,
-// other containers) are not offered: the media sources say so.
+// stream hands out the file itself, to the app's login or to the play
+// session in the address (see jellyfin_play.go).
 func (c *jfContext) stream() {
 	e, ok := c.entry()
 	file := c.arg["file"]
@@ -1183,7 +1189,12 @@ func (c *jfContext) stream() {
 		}
 		return
 	}
-	c.s.serveVideo(c.w, c.r, e.item, c.u.Name)
+	u := c.playUser(e.item.ID)
+	if u == nil {
+		http.Error(c.w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	c.s.serveVideo(c.w, c.r, e.item, u.Name)
 }
 
 func (c *jfContext) subtitle() {
@@ -1227,7 +1238,7 @@ func (c *jfContext) playing() {
 	if it := c.cat.items[jfID(req.ItemId)]; it != nil {
 		position := time.Duration(req.PositionTicks * 100).Seconds()
 		if position > 0 || strings.HasSuffix(strings.ToLower(c.r.URL.Path), "/stopped") {
-			c.s.auth.Watch(c.u.ID, it.ID, position, c.s.lib.Duration(it).Seconds())
+			c.s.auth.Watch(c.u.ID, viewing(it), position, c.s.lib.Duration(it).Seconds())
 		}
 	}
 	c.noContent()
