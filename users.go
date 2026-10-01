@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // pure Go: the builds need no C compiler
@@ -83,8 +85,8 @@ type session struct {
 // every change is written through at once. The history of viewings is in
 // the database only.
 type Auth struct {
-	db       *sql.DB
-	path     string
+	db       atomic.Pointer[sql.DB] // swapped when the database moves (MoveTo)
+	path     atomic.Pointer[string]
 	ServerID string
 
 	mu       sync.Mutex
@@ -210,21 +212,16 @@ func OpenAuth(path, legacy string) (*Auth, error) {
 		return nil, err
 	}
 	fresh := !exists(path)
-	dsn := "file:" + (&url.URL{Path: path}).EscapedPath() +
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openDB(path)
 	if err != nil {
 		return nil, err
-	}
-	db.SetMaxOpenConns(1) // one writer; the work is small
-	if _, err := db.Exec(authSchema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if fresh {
 		os.Chmod(path, 0o600) // password hashes and tokens
 	}
-	a := &Auth{db: db, path: path, sessions: map[string]*session{}, watched: map[string]map[string]*Progress{}}
+	a := &Auth{sessions: map[string]*session{}, watched: map[string]map[string]*Progress{}}
+	a.db.Store(db)
+	a.path.Store(&path)
 	if fresh && legacy != "" && exists(legacy) {
 		if err := a.importJSON(legacy); err != nil {
 			db.Close()
@@ -240,7 +237,69 @@ func OpenAuth(path, legacy string) (*Auth, error) {
 	return a, nil
 }
 
-func (a *Auth) Close() error { return a.db.Close() }
+func openDB(path string) (*sql.DB, error) {
+	dsn := "file:" + (&url.URL{Path: path}).EscapedPath() +
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1) // one writer; the work is small
+	if _, err := db.Exec(authSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return db, nil
+}
+
+func (a *Auth) conn() *sql.DB { return a.db.Load() }
+
+func (a *Auth) Close() error { return a.conn().Close() }
+
+// Path is the database file.
+func (a *Auth) Path() string { return *a.path.Load() }
+
+// canMoveTo checks a new place for the database before anything changes.
+func canMoveTo(path string) error {
+	if exists(path) {
+		return fmt.Errorf("there is a file at %s already: choose another place, or move that file away first", path)
+	}
+	return writableFor(path)
+}
+
+// MoveTo moves the database to another file while the server runs. SQLite
+// copies it (VACUUM INTO: consistent even while it is written) over the
+// only connection, so nothing is written meanwhile; then the new file is
+// used and the old one is kept as <old>.old.
+func (a *Auth) MoveTo(path string) error {
+	if err := canMoveTo(path); err != nil {
+		return err
+	}
+	old, oldPath := a.conn(), a.Path()
+	ctx := context.Background()
+	c, err := old.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := c.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+		c.Close()
+		os.Remove(path)
+		return fmt.Errorf("cannot copy the database to %s: %w", path, err)
+	}
+	db, err := openDB(path)
+	if err != nil {
+		c.Close()
+		os.Remove(path)
+		return err
+	}
+	os.Chmod(path, 0o600)
+	a.db.Store(db)
+	a.path.Store(&path)
+	c.Close()
+	old.Close()
+	os.Rename(oldPath, oldPath+".old")
+	return nil
+}
 
 // writableFor checks that the database can be made and written where it
 // is to be: SQLite needs to write the folder too (its -wal and -shm files
@@ -278,7 +337,7 @@ func writableFor(path string) error {
 
 // load reads the accounts, tokens and watch states into memory.
 func (a *Auth) load() error {
-	db := a.db
+	db := a.conn()
 	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'server_id'`).Scan(&a.ServerID); errors.Is(err, sql.ErrNoRows) {
 		a.ServerID = randomHex(16)
 		if _, err := db.Exec(`INSERT INTO meta (key, value) VALUES ('server_id', ?)`, a.ServerID); err != nil {
@@ -320,7 +379,7 @@ func (a *Auth) load() error {
 }
 
 func (a *Auth) loadWatched() error {
-	rows, err := a.db.Query(`SELECT user_id, item_id, position, played, play_count, favorite, last_played, rating, planned, note FROM watch`)
+	rows, err := a.conn().Query(`SELECT user_id, item_id, position, played, play_count, favorite, last_played, rating, planned, note FROM watch`)
 	if err != nil {
 		return err
 	}
@@ -358,7 +417,7 @@ func (a *Auth) importJSON(path string) error {
 	if err := json.Unmarshal(data, &old); err != nil {
 		return err
 	}
-	tx, err := a.db.Begin()
+	tx, err := a.conn().Begin()
 	if err != nil {
 		return err
 	}
@@ -466,7 +525,7 @@ func (a *Auth) SetUser(name, password string, admin bool) (*User, error) {
 	if password != "" {
 		changed.Hash = hashPassword(password)
 	}
-	if _, err := a.db.Exec(`INSERT INTO users (id, name, hash, admin, created) VALUES (?, ?, ?, ?, ?)
+	if _, err := a.conn().Exec(`INSERT INTO users (id, name, hash, admin, created) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET hash = excluded.hash, admin = excluded.admin`,
 		changed.ID, changed.Name, changed.Hash, changed.Admin, time.Now().UnixNano()); err != nil {
 		return nil, err
@@ -499,7 +558,7 @@ func (a *Auth) DeleteUser(id string) error {
 	case a.users[idx].Admin && admins == 1:
 		return errors.New("the last administrator cannot be deleted")
 	}
-	if _, err := a.db.Exec(`DELETE FROM users WHERE id = ?`, id); err != nil { // and the rest, by cascade
+	if _, err := a.conn().Exec(`DELETE FROM users WHERE id = ?`, id); err != nil { // and the rest, by cascade
 		return err
 	}
 	a.users = append(a.users[:idx], a.users[idx+1:]...)
@@ -528,7 +587,7 @@ func (a *Auth) Login(name, password, device string) (*User, string, error) {
 	s := &session{UserID: u.ID, Device: device, Created: time.Now()}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, err := a.db.Exec(`INSERT INTO sessions (token, user_id, device, created) VALUES (?, ?, ?, ?)`, token, s.UserID, s.Device, unixTime(s.Created)); err != nil {
+	if _, err := a.conn().Exec(`INSERT INTO sessions (token, user_id, device, created) VALUES (?, ?, ?, ?)`, token, s.UserID, s.Device, unixTime(s.Created)); err != nil {
 		return nil, "", err
 	}
 	a.sessions[token] = s
@@ -539,7 +598,7 @@ func (a *Auth) Logout(token string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.sessions, token)
-	a.db.Exec(`DELETE FROM sessions WHERE token = ?`, token)
+	a.conn().Exec(`DELETE FROM sessions WHERE token = ?`, token)
 }
 
 // ByToken returns the user a token belongs to, or nil.
@@ -583,7 +642,7 @@ func (a *Auth) Update(userID, itemID string, change func(*Progress)) Progress {
 	if !a.known(userID) {
 		return p
 	}
-	if err := writeProgress(a.db, userID, itemID, &p); err != nil {
+	if err := writeProgress(a.conn(), userID, itemID, &p); err != nil {
 		return p
 	}
 	if a.watched[userID] == nil {
@@ -628,19 +687,19 @@ func (a *Auth) addToHistory(userID string, v Viewing, position, duration float64
 	now := time.Now()
 	var id, ended int64
 	var lastPos, watched float64
-	err := a.db.QueryRow(`SELECT id, ended, position, watched FROM history WHERE user_id = ? AND item_id = ? ORDER BY ended DESC LIMIT 1`,
+	err := a.conn().QueryRow(`SELECT id, ended, position, watched FROM history WHERE user_id = ? AND item_id = ? ORDER BY ended DESC LIMIT 1`,
 		userID, v.ItemID).Scan(&id, &ended, &lastPos, &watched)
 	if err == nil && now.Sub(fromUnix(ended)) < historySitting {
 		elapsed := now.Sub(fromUnix(ended)).Seconds()
 		if step := position - lastPos; step > 0 && step <= elapsed+10 {
 			watched += step
 		}
-		a.db.Exec(`UPDATE history SET ended = ?, position = ?, watched = ?, duration = ?, finished = finished OR ?,
+		a.conn().Exec(`UPDATE history SET ended = ?, position = ?, watched = ?, duration = ?, finished = finished OR ?,
 			title = ?, show_title = ?, year = ?, season = ?, episode = ? WHERE id = ?`,
 			now.Unix(), position, watched, duration, finished, v.Title, v.ShowTitle, v.Year, v.Season, v.Episode, id)
 		return
 	}
-	a.db.Exec(`INSERT INTO history (user_id, item_id, show_id, kind, title, year, show_title, season, episode, started, ended, watched, position, duration, finished)
+	a.conn().Exec(`INSERT INTO history (user_id, item_id, show_id, kind, title, year, show_title, season, episode, started, ended, watched, position, duration, finished)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
 		userID, v.ItemID, v.ShowID, v.Kind, v.Title, v.Year, v.ShowTitle, v.Season, v.Episode, now.Unix(), now.Unix(), position, duration, finished)
 }
@@ -665,7 +724,7 @@ func (a *Auth) History(userID string, after HistoryCursor, limit int) ([]History
 	if after.Started <= 0 {
 		after = HistoryCursor{1 << 62, 1 << 62}
 	}
-	rows, err := a.db.Query(`SELECT id, item_id, show_id, kind, title, year, show_title, season, episode, started, ended, watched, position, duration, finished
+	rows, err := a.conn().Query(`SELECT id, item_id, show_id, kind, title, year, show_title, season, episode, started, ended, watched, position, duration, finished
 		FROM history WHERE user_id = ? AND (started < ? OR (started = ? AND id < ?)) AND (watched >= ? OR finished)
 		ORDER BY started DESC, id DESC LIMIT ?`,
 		userID, after.Started, after.Started, after.ID, historyMinimum, limit)
@@ -697,7 +756,7 @@ type HistoryStats struct {
 
 func (a *Auth) Stats(userID string, since time.Time) HistoryStats {
 	var s HistoryStats
-	a.db.QueryRow(`SELECT COALESCE(SUM(watched), 0), COALESCE(SUM(CASE WHEN ended >= ? THEN watched END), 0),
+	a.conn().QueryRow(`SELECT COALESCE(SUM(watched), 0), COALESCE(SUM(CASE WHEN ended >= ? THEN watched END), 0),
 		COUNT(DISTINCT CASE WHEN kind = 'episode' THEN show_id ELSE item_id END), COALESCE(SUM(finished), 0)
 		FROM history WHERE user_id = ? AND (watched >= ? OR finished)`, since.Unix(), userID, historyMinimum).
 		Scan(&s.Total, &s.Since, &s.Titles, &s.Finished)
@@ -707,10 +766,10 @@ func (a *Auth) Stats(userID string, since time.Time) HistoryStats {
 // ForgetHistory removes one entry of a user's history, or all of it (id 0).
 func (a *Auth) ForgetHistory(userID string, id int64) error {
 	if id == 0 {
-		_, err := a.db.Exec(`DELETE FROM history WHERE user_id = ?`, userID)
+		_, err := a.conn().Exec(`DELETE FROM history WHERE user_id = ?`, userID)
 		return err
 	}
-	res, err := a.db.Exec(`DELETE FROM history WHERE user_id = ? AND id = ?`, userID, id)
+	res, err := a.conn().Exec(`DELETE FROM history WHERE user_id = ? AND id = ?`, userID, id)
 	if err != nil {
 		return err
 	}
@@ -728,7 +787,7 @@ func (a *Auth) Moved(ids map[string]string) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	tx, err := a.db.Begin()
+	tx, err := a.conn().Begin()
 	if err != nil {
 		return
 	}

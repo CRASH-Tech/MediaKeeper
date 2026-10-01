@@ -231,6 +231,11 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	if *lang != "" {
 		cfg.Language, locked["language"] = *lang, "-lang"
 	}
+	if *dbFlag != "" {
+		locked["server.database"] = "-db"
+	} else if os.Getenv("MEDIAKEEPER_DB") != "" {
+		locked["server.database"] = "MEDIAKEEPER_DB"
+	}
 	if cfg.Language == "" {
 		cfg.Language = "en-US"
 	}
@@ -348,7 +353,7 @@ func askKeys(ui *UI, store *Auth, cfg *Config) error {
 		"            https://kinopoiskapiunofficial.tech",
 	}, []string{
 		"Enter keeps the current value, \"-\" erases the key.",
-		"Keys are saved in the database, " + store.path + ".",
+		"Keys are saved in the database, " + store.Path() + ".",
 	})
 	for _, k := range []struct {
 		name  string

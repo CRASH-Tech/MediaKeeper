@@ -30,8 +30,7 @@ type Server struct {
 	live     liveSettings // the settings in force; they change while it runs (settings.go)
 	changing sync.Mutex   // one change of the settings at a time
 	setupMu  sync.Mutex   // one first-start setup at a time
-	dbPath   string
-	port     int // the port it listens on
+	port     int          // the port it listens on
 	hwBad    hwFailures
 	subs     subtitleCache
 	log      func(format string, args ...any)
@@ -84,7 +83,7 @@ func NewServer(o ServerOptions, log func(string, ...any)) (*Server, error) {
 		}
 	}
 	var err error
-	s := &Server{dbPath: o.Database, port: o.Port, log: log,
+	s := &Server{port: o.Port, log: log,
 		prober: newProber(), auth: auth, transcodes: make(chan struct{}, 2), failures: map[string][]time.Time{}}
 	// The settings in force: what the caller worked out (saved settings,
 	// flags, variables), with defaults.

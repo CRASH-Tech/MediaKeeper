@@ -87,12 +87,12 @@ func TestHistoryAndRatings(t *testing.T) {
 	if all, _ = a.History(u.ID, HistoryCursor{}, 10); len(all) != 1 {
 		t.Errorf("a glance is listed: %+v", all)
 	}
-	a.db.Exec(`DELETE FROM history WHERE item_id = 'other'`)
-	a.db.Exec(`UPDATE history SET watched = 3600`)
+	a.conn().Exec(`DELETE FROM history WHERE item_id = 'other'`)
+	a.conn().Exec(`UPDATE history SET watched = 3600`)
 	// A later sitting is a new entry.
-	a.db.Exec(`UPDATE history SET ended = ended - 7200, started = started - 7200`)
+	a.conn().Exec(`UPDATE history SET ended = ended - 7200, started = started - 7200`)
 	a.Watch(u.ID, film, 100, 6000)
-	a.db.Exec(`UPDATE history SET watched = 120 WHERE watched = 0`)
+	a.conn().Exec(`UPDATE history SET watched = 120 WHERE watched = 0`)
 	if all, _ = a.History(u.ID, HistoryCursor{}, 10); len(all) != 2 {
 		t.Fatalf("two sittings: %+v", all)
 	}
@@ -127,7 +127,7 @@ func TestHistoryAndRatings(t *testing.T) {
 		t.Fatal(err)
 	}
 	var left int
-	a.db.QueryRow(`SELECT (SELECT COUNT(*) FROM watch) + (SELECT COUNT(*) FROM history)`).Scan(&left)
+	a.conn().QueryRow(`SELECT (SELECT COUNT(*) FROM watch) + (SELECT COUNT(*) FROM history)`).Scan(&left)
 	if left != 0 {
 		t.Errorf("%d rows of a deleted user are left", left)
 	}
@@ -266,7 +266,7 @@ func TestMineAPI(t *testing.T) {
 
 	// Watching fills the history.
 	kid.post("/api/progress/"+iron, map[string]any{"position": 300})
-	s.auth.db.Exec(`UPDATE history SET watched = 600`)
+	s.auth.conn().Exec(`UPDATE history SET watched = 600`)
 	var hist struct {
 		Entries []struct {
 			ID                  int64
@@ -325,7 +325,7 @@ func TestHistoryPages(t *testing.T) {
 		title string
 		ago   int64
 	}{{"third", 3600}, {"first", 3 * 86400}, {"second", 86400}, {"fourth", 60}, {"also fourth", 60}} {
-		a.db.Exec(`INSERT INTO history (user_id, item_id, kind, title, started, ended, watched) VALUES (?, ?, 'movie', ?, ?, ?, 600)`,
+		a.conn().Exec(`INSERT INTO history (user_id, item_id, kind, title, started, ended, watched) VALUES (?, ?, 'movie', ?, ?, ?, 600)`,
 			u.ID, e.title, e.title, now-e.ago, now-e.ago+600)
 	}
 	var titles []string

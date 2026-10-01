@@ -196,6 +196,9 @@ GOTOOLCHAIN=go1.24.0 go build .      # go.mod promises Go 1.24: check after touc
   `/api/settings/folders`, to choose folders); its POST validates the
   settings first, then makes the administrator and signs them in, and closes
   for good. `MEDIAKEEPER_ADMIN_PASSWORD` makes/resets the account instead.
+  The wizard and Settings can move the database live (`Auth.MoveTo`, VACUUM
+  INTO + swapping the pointer): always reach the DB through `a.conn()`,
+  never keep a `*sql.DB` around.
   Library folders a server first starts with (command line, or `/media` in
   Docker) are saved once (`firstLibraries`, `LibrariesSet`), so the image's
   command is just `-serve`.

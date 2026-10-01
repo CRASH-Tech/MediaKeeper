@@ -641,3 +641,6 @@ details.advanced summary { cursor: pointer; color: var(--dim); font-size: 13.5px
 .dots span.on { background: var(--accent); transform: scale(1.25); }
 .setup-buttons { margin-top: 20px; }
 @media (max-width: 720px) { .setup { margin: 16px auto; padding: 22px 18px; } }
+.path-input { flex-wrap: nowrap; }
+.path-input .grow { min-width: 0; }
+.path-input input { width: 100%; }

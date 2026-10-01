@@ -156,9 +156,13 @@ func TestSetup(t *testing.T) {
 	if status, _ := b.post("/api/setup", map[string]any{"user": "me", "password": "secret", "libraries": []map[string]string{{"path": "/no/such"}}}); status != 400 || s.auth.HasUsers() {
 		t.Errorf("a wrong folder left an account behind")
 	}
+	dbDir, cache := t.TempDir(), t.TempDir()
 	if status, body := b.post("/api/setup", map[string]any{"user": "me", "password": "secret", "name": "Living room", "omdbKey": "key",
-		"libraries": []map[string]string{{"path": root, "kind": "movies"}}}); status != 200 {
+		"libraries": []map[string]string{{"path": root, "kind": "movies"}}, "database": dbDir, "cache": cache}); status != 200 {
 		t.Fatalf("setup: %d %s", status, body)
+	}
+	if s.auth.Path() != filepath.Join(dbDir, "mediakeeper.db") || s.cacheRoot() != cache {
+		t.Errorf("the database in %s, the cache in %s", s.auth.Path(), s.cacheRoot())
 	}
 	var me struct {
 		Name  string
@@ -237,5 +241,46 @@ func TestFirstLibraries(t *testing.T) {
 	firstLibraries(store, &none, []Root{{Path: t.TempDir()}}, func(string, ...any) {})
 	if saved, _, _ := store.Settings(); len(saved.Libraries) != 0 {
 		t.Errorf("chosen folders replaced: %+v", saved.Libraries)
+	}
+}
+
+// The database moves while the server runs: accounts and sessions go on,
+// config.yaml says where it is now, and the old file is kept.
+func TestMoveDatabase(t *testing.T) {
+	s, srv := serverFixture(t)
+	boss := newBrowser(t, srv, "boss")
+	s.auth.SaveSettings(s.config())
+	old := s.auth.Path()
+	occupied := filepath.Join(t.TempDir(), "taken.db")
+	os.WriteFile(occupied, []byte("x"), 0o600)
+	for name, bad := range map[string]string{"a relative path": "data/mk.db", "a file that is there": occupied} {
+		if status, _ := boss.post("/api/settings", map[string]any{"database": bad}); status != 400 {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	dir := t.TempDir()
+	if status, body := boss.post("/api/settings", map[string]any{"database": dir}); status != 200 {
+		t.Fatalf("move: %d %s", status, body)
+	}
+	moved := filepath.Join(dir, "mediakeeper.db")
+	if s.auth.Path() != moved || !fileExists(moved) || !fileExists(old+".old") || fileExists(old) {
+		t.Errorf("after the move: %s, old there: %v", s.auth.Path(), fileExists(old))
+	}
+	if file := mustLoad(t); file.Server.Database != moved {
+		t.Errorf("config.yaml: %+v", file.Server)
+	}
+	var me struct{ Name string }
+	if boss.json("/api/me", &me); me.Name != "boss" { // the session was moved too
+		t.Errorf("signed out by the move: %+v", me)
+	}
+	newBrowser(t, srv, "kid") // signing in reads the moved database
+	if saved, ok, _ := s.auth.Settings(); !ok || saved.TMDBKey != "tmdbkey" {
+		t.Errorf("the settings did not move: %+v", saved)
+	}
+
+	// Set by -db: not moved.
+	s.live.locked["server.database"] = "-db"
+	if status, _ := boss.post("/api/settings", map[string]any{"database": t.TempDir()}); status != 400 {
+		t.Errorf("a locked database moved")
 	}
 }

@@ -235,8 +235,8 @@ The Jellyfin API always needs an account; DLNA never does.
 
 **The first start.** While there is no account, the web interface opens with
 a short setup: the administrator's name and password, the library folders
-(chosen from the server's folders), the server's name, the language and the
-catalogue keys. Everything but the account can be left for later. Whoever
+(chosen from the server's folders), where the database and the screenshots
+are kept, the server's name, the language and the catalogue keys. Everything but the account can be left for later. Whoever
 finishes it first becomes the administrator, so do it right after starting
 the server. To make the account without the browser, or to reset a forgotten
 password, start the server with `MEDIAKEEPER_ADMIN_PASSWORD` (and optionally
@@ -616,7 +616,7 @@ accounts, and are changed in the web interface under **Settings**
 |---|---|
 | Library | the library folders, chosen from the server's folders, and what each holds |
 | Descriptions | the API keys, the language, the sources and their order, a TMDB mirror |
-| Server | the name, the port, watching without signing in, DLNA, tags in downloaded files, hardware conversion, the folder of screenshots |
+| Server | the name, the port, watching without signing in, DLNA, tags in downloaded files, hardware conversion, the folder of screenshots, the database file |
 | Users | the accounts and their roles |
 
 Most changes take effect at once — new library folders show up in the
@@ -642,6 +642,12 @@ to (`/usr/local/bin`, a package manager's folder), they are kept in
 Each can be given as a folder too (`config.yaml`, `mediakeeper.db` in it).
 Relative paths are relative to the folder of `config.yaml`. Moving the cache
 is harmless: the images are simply taken again.
+
+The database can also be moved in the web interface (the first-start setup,
+or **Settings → Server**): the server copies it to the new place at once,
+keeps working from there, keeps the old file as `mediakeeper.db.old` and
+writes the new place into `config.yaml` as `server.database`. In Docker,
+choose a mounted folder, or the database is lost with the container.
 
 **`config.yaml`** now only says where the database is. Settings written into
 it — by hand, or by an earlier version — are taken into the database at the

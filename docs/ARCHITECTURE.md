@@ -274,6 +274,10 @@ While there is no account, `/api/setup` (and the folder picker,
 `/api/settings/folders`) is open without signing in; its POST checks the
 settings, makes the administrator, signs them in and closes for good.
 `MEDIAKEEPER_ADMIN_PASSWORD` makes or resets the account without it. The
+setup (and Settings → Server) can also move the database: `Auth.MoveTo`
+copies it with `VACUUM INTO` over its only connection, swaps the `*sql.DB`
+(an atomic pointer behind `Auth.conn()`), keeps the old file as `.old`, and
+`server.database` is written into `config.yaml`. The
 library folders a server first starts with (the command line, or `/media`
 in Docker) are saved once (`firstLibraries`).
 

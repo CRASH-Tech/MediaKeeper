@@ -31,7 +31,7 @@ const settingsKey = "settings"
 // Settings reads the saved settings; ok is false when nothing was saved yet.
 func (a *Auth) Settings() (c Config, ok bool, err error) {
 	var text string
-	switch err = a.db.QueryRow(`SELECT value FROM meta WHERE key = ?`, settingsKey).Scan(&text); {
+	switch err = a.conn().QueryRow(`SELECT value FROM meta WHERE key = ?`, settingsKey).Scan(&text); {
 	case errors.Is(err, sql.ErrNoRows):
 		return c, false, nil
 	case err != nil:
@@ -45,7 +45,7 @@ func (a *Auth) SaveSettings(c Config) error {
 	if err != nil {
 		return err
 	}
-	_, err = a.db.Exec(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, settingsKey, string(data))
+	_, err = a.conn().Exec(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, settingsKey, string(data))
 	return err
 }
 
@@ -418,7 +418,7 @@ func (s *Server) settingsView() map[string]any {
 		"name":      c.Server.Name, "port": c.Server.Port, "dlna": c.Server.DLNA == nil || *c.Server.DLNA,
 		"guests": c.Server.Guests == nil || *c.Server.Guests, "tags": !c.Server.NoTags,
 		"cache": c.Server.Cache, "cacheDir": s.cacheRoot(), "hwaccel": c.Server.HWAccel, "hwInUse": hw,
-		"locked": locked, "database": s.dbPath,
+		"locked": locked, "database": s.auth.Path(), "container": inContainer(),
 	}
 }
 
@@ -443,6 +443,7 @@ type settingsChange struct {
 	Tags         *bool    `json:"tags"`
 	Cache        *string  `json:"cache"`
 	HWAccel      *string  `json:"hwaccel"`
+	Database     *string  `json:"database"` // where to move the database: kept in config.yaml, not in it
 }
 
 var reLanguage = regexp.MustCompile(`^[a-z]{2}(-[A-Z]{2})?$`)
@@ -566,12 +567,64 @@ func (s *Server) changeSettings(ch settingsChange) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A new place for the database is checked before anything is saved.
+	database := ""
+	if ch.Database != nil {
+		if database, err = s.newDatabasePath(*ch.Database); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.auth.SaveSettings(changed); err != nil {
 		return nil, err
 	}
 	restart := s.applySettings(changed)
 	s.log("settings changed")
+	if database != "" {
+		if err := s.moveDatabase(database); err != nil {
+			return restart, err
+		}
+	}
 	return restart, nil
+}
+
+// newDatabasePath checks a place to move the database to: "" when it is
+// where it is already. A folder means mediakeeper.db in it.
+func (s *Server) newDatabasePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	s.live.mu.RLock()
+	locked := s.live.locked["server.database"]
+	s.live.mu.RUnlock()
+	path = filepath.Clean(expandHome(path))
+	if !filepath.IsAbs(path) {
+		return "", errors.New("the database is given by its full path")
+	}
+	if st, err := os.Stat(path); (err == nil && st.IsDir()) || filepath.Ext(path) == "" {
+		path = filepath.Join(path, "mediakeeper.db")
+	}
+	if path == s.auth.Path() {
+		return "", nil
+	}
+	if locked != "" {
+		return "", fmt.Errorf("the place of the database is set by %s: change it there", locked)
+	}
+	return path, canMoveTo(path)
+}
+
+// moveDatabase moves the database while the server runs and writes its new
+// place into config.yaml, where the next start looks for it.
+func (s *Server) moveDatabase(path string) error {
+	old := s.auth.Path()
+	if err := s.auth.MoveTo(path); err != nil {
+		return err
+	}
+	if err := writeBootstrapConfig(configPath(), path); err != nil {
+		return fmt.Errorf("the database is in %s now, but config.yaml could not say so (%v): start the server with -db %s", path, err, path)
+	}
+	s.log("the database moved from %s to %s (the old file is kept as %s.old)", old, path, filepath.Base(old))
+	return nil
 }
 
 // foldersAPI serves GET /api/settings/folders?path=…: the folders in a
@@ -646,10 +699,11 @@ func (s *Server) setupAPI(w http.ResponseWriter, r *http.Request) {
 			libraries = append(libraries, map[string]string{"path": "/media", "kind": ""})
 		}
 		s.live.mu.RLock()
-		locked := s.live.locked["libraries"]
+		locked := s.live.locked
 		s.live.mu.RUnlock()
 		writeJSON(w, http.StatusOK, map[string]any{"needed": !s.auth.HasUsers(), "name": s.serverName(),
-			"libraries": libraries, "librariesLocked": locked, "language": s.config().Language})
+			"libraries": libraries, "language": s.config().Language,
+			"database": s.auth.Path(), "cache": s.config().Server.Cache, "locked": locked, "container": inContainer()})
 	case http.MethodPost:
 		var req struct {
 			User     string `json:"user"`

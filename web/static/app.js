@@ -1553,6 +1553,22 @@ function folderEditor(roots, disabled) {
   return box;
 }
 
+// pathInput puts a "Choose…" button next to a field for a place on the
+// server: a folder, or with file a file of that name in the folder chosen.
+function pathInput(input, file) {
+  const choose = h("button", { type: "button", class: "small", disabled: input.disabled, onclick: () => {
+    const value = input.value.trim();
+    folderPicker(file ? value.replace(/\/[^/]*$/, "") : value, dir => {
+      input.value = file ? joinPath(dir, file) : dir;
+      input.dispatchEvent(new Event("input"));
+    });
+  } }, "Choose…");
+  return h("div", { class: "row path-input" }, h("div", { class: "grow" }, input), choose);
+}
+
+// In a container only mounted folders outlive it.
+const dockerNote = state => state.container ? " In Docker, keep it in a mounted folder (as /config), or it is lost with the container." : "";
+
 // keyInput is an API key field: a key that is set is not sent back to the
 // browser; typing replaces it, the button removes it.
 function keyInput(state, change) {
@@ -1684,9 +1700,12 @@ function serverTab(view, save) {
     h("div", { class: "panel glass" },
       h("h2", { style: "margin-top:0" }, "Conversion"),
       field("Hardware conversion", hw, lockedNote(view.locked, "server.hwaccel") || `In use now: ${view.hwInUse}. Without a card that works, the processor converts.`),
-      field("Folder of screenshots and stills", text("server.cache", "cache", view.cache, { placeholder: view.cacheDir, spellcheck: false }),
-        lockedNote(view.locked, "server.cache") || `Now: ${view.cacheDir}. Empty: .cache in the first library folder.`),
-      h("p", { class: "dim", style: "margin-bottom:0" }, `The settings are kept in ${view.database}.`)),
+      field("Folder of screenshots and stills", pathInput(text("server.cache", "cache", view.cache, { placeholder: view.cacheDir, spellcheck: false })),
+        lockedNote(view.locked, "server.cache") || `Now: ${view.cacheDir}. Empty: .cache in the first library folder. Moving it is harmless: the images are made again.`)),
+    h("div", { class: "panel glass" },
+      h("h2", { style: "margin-top:0" }, "Database"),
+      field("Database file", pathInput(text("server.database", "database", view.database, { spellcheck: false }), "mediakeeper.db"),
+        lockedNote(view.locked, "server.database") || "The settings, accounts, watch progress and history. Moved at once when saved; the old file is kept next to it as .old." + dockerNote(view))),
     saveRow(() => change, save, render));
 }
 
@@ -1726,12 +1745,15 @@ async function usersPanel(body) {
 
 // ------------------------------------------------------------------ setup
 
-// renderSetup is the first start: there is no account yet. Three steps: the
-// administrator, the library folders, the name and the catalogue keys.
+// renderSetup is the first start: there is no account yet. Four steps: the
+// administrator, the library folders, where the database and the images are
+// kept, the name and the catalogue keys.
 function renderSetup(state) {
   document.title = "MediaKeeper";
   const data = { user: "admin", password: "", repeat: "", roots: state.libraries || [],
-    name: state.name || "MediaKeeper", language: state.language || "en-US", tmdbKey: "", omdbKey: "", kinopoiskKey: "" };
+    name: state.name || "MediaKeeper", language: state.language || "en-US", tmdbKey: "", omdbKey: "", kinopoiskKey: "",
+    database: state.database || "", cache: state.cache || "" };
+  const locked = state.locked || {};
   let step = 0;
   const error = h("p", { class: "error" });
   const card = h("form", { class: "setup glass", onsubmit: e => { e.preventDefault(); next(); } });
@@ -1744,8 +1766,14 @@ function renderSetup(state) {
       field("The password again", input("repeat", { type: "password", autocomplete: "new-password", required: true }))],
     () => [h("h2", {}, "The library"),
       h("p", { class: "dim" }, "The folders of films and series on the server. You can add them later as well, under Settings."),
-      state.librariesLocked && h("p", { class: "locked" }, `Set by ${state.librariesLocked}: change them there.`),
-      folderEditor(data.roots, !!state.librariesLocked)],
+      lockedNote(locked, "libraries"),
+      folderEditor(data.roots, !!locked.libraries)],
+    () => [h("h2", {}, "Storage"),
+      h("p", { class: "dim" }, "Where the server keeps its own files. The suggested places are fine for most; both can be changed later under Settings."),
+      field("Database", pathInput(input("database", { type: "text", spellcheck: false, disabled: !!locked["server.database"] }), "mediakeeper.db"),
+        lockedNote(locked, "server.database") || "The settings, accounts, watch progress and history: worth a backup." + dockerNote(state)),
+      field("Screenshots and episode stills", pathInput(input("cache", { type: "text", spellcheck: false, placeholder: ".cache in the first library folder", disabled: !!locked["server.cache"] })),
+        lockedNote(locked, "server.cache") || "Made from the videos, and made again if lost. Empty: .cache in the first library folder.")],
     () => [h("h2", {}, "Descriptions"),
       h("p", { class: "dim" }, "Posters, descriptions and ratings come from online catalogues. Without keys the free ones are used (TVMaze, Wikidata); keys can be added later under Settings."),
       field("Server name", input("name", { type: "text", required: true })),
@@ -1775,7 +1803,9 @@ function renderSetup(state) {
     button.disabled = true;
     try {
       const body = { user: data.user.trim(), password: data.password, name: data.name, language: data.language };
-      if (!state.librariesLocked) body.libraries = data.roots.map(({ path, kind }) => ({ path, kind }));
+      if (!locked.libraries) body.libraries = data.roots.map(({ path, kind }) => ({ path, kind }));
+      if (!locked["server.database"] && data.database.trim() && data.database.trim() !== state.database) body.database = data.database.trim();
+      if (!locked["server.cache"] && data.cache.trim()) body.cache = data.cache.trim();
       for (const k of ["tmdbKey", "omdbKey", "kinopoiskKey"]) if (data[k].trim()) body[k] = data[k].trim();
       me = await api("setup", { json: body });
       library = null;
