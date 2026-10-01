@@ -43,10 +43,10 @@ services:
       # MEDIAKEEPER_ADMIN: admin
       # MEDIAKEEPER_ADMIN_PASSWORD: change-me
       # Where the database and the generated images are kept (defaults: the
-      # database in /config/mediakeeper, images in /media/.cache).
+      # database in /config, images in /media/.cache).
       # The folders must be writable by the user above; /cache needs its
       # volume below.
-      # MEDIAKEEPER_DB: /config/mediakeeper/mediakeeper.db
+      # MEDIAKEEPER_DB: /config/mediakeeper.db
       # MEDIAKEEPER_CACHE: /cache
       # Convert video on a graphics card (Intel or AMD, with "devices" below):
       # MEDIAKEEPER_HWACCEL: auto

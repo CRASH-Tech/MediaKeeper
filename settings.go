@@ -418,7 +418,7 @@ func (s *Server) settingsView() map[string]any {
 		"name":      c.Server.Name, "port": c.Server.Port, "dlna": c.Server.DLNA == nil || *c.Server.DLNA,
 		"guests": c.Server.Guests == nil || *c.Server.Guests, "tags": !c.Server.NoTags,
 		"cache": c.Server.Cache, "cacheDir": s.cacheRoot(), "hwaccel": c.Server.HWAccel, "hwInUse": hw,
-		"locked": locked, "database": s.auth.Path(), "container": inContainer(),
+		"locked": locked, "database": s.auth.Path(), "container": inContainer(), "configDir": filepath.Dir(configPath()),
 	}
 }
 
@@ -753,7 +753,8 @@ func (s *Server) setupAPI(w http.ResponseWriter, r *http.Request) {
 		s.live.mu.RUnlock()
 		writeJSON(w, http.StatusOK, map[string]any{"needed": !s.auth.HasUsers(), "name": s.serverName(),
 			"libraries": libraries, "language": s.config().Language,
-			"database": s.auth.Path(), "cache": s.config().Server.Cache, "locked": locked, "container": inContainer()})
+			"database": s.auth.Path(), "cache": s.config().Server.Cache, "locked": locked, "container": inContainer(),
+			"configDir": filepath.Dir(configPath())})
 	case http.MethodPost:
 		var req struct {
 			User     string `json:"user"`

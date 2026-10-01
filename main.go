@@ -166,9 +166,10 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	ui := NewUI(in, out)
 	dbPath, legacy := databasePath(*dbFlag, fileCfg.Server.Database), filepath.Join(filepath.Dir(configPath()), "server.json")
 	var store *Auth
-	if *serve && freshStart(dbPath, legacy, *dbFlag != "" || fileCfg.Server.Database != "" || fileHasSettings(fileCfg)) {
+	if freshStart(dbPath, legacy, *dbFlag != "" || fileCfg.Server.Database != "" || fileHasSettings(fileCfg)) {
 		// Nothing to keep yet: the database stays in memory until the setup
-		// in the browser says where it goes.
+		// in the browser says where it goes (or, organizing, until there is
+		// something to save: the keys).
 		store, err = OpenMemoryAuth(dbPath)
 	} else {
 		store, err = OpenAuth(dbPath, legacy)
@@ -383,7 +384,11 @@ func askKeys(ui *UI, store *Auth, cfg *Config) error {
 			*k.field = line
 		}
 	}
-	if err := store.SaveSettings(*cfg); err != nil {
+	err := store.SaveSettings(*cfg)
+	if err == nil && store.InMemory() {
+		err = store.MoveTo(store.Path()) // the first thing to keep: the database is made now
+	}
+	if err != nil {
 		ui.Printf("%s\n", ui.Yellow("Cannot save the settings: "+err.Error()))
 	}
 	ui.Printf("\n")

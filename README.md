@@ -601,7 +601,7 @@ else the current directory.
 | `-hwaccel WAY`  | With `-serve`: convert video on a graphics card: `auto`, `vaapi`, `qsv`, `nvenc` or `none` (default) |
 | `-cache DIR`    | With `-serve`: the folder of screenshots and episode stills (default: `.cache` in the first library folder) |
 | `-db FILE`      | The database of settings, accounts, ratings, watchlists and history (default: `mediakeeper.db` next to `config.yaml`) |
-| `-config FILE`  | Where `config.yaml` is, or a folder for it (default: next to the program) |
+| `-config DIR`   | The folder of `config.yaml` and the database (or a `.yaml` file); made when something is kept (default: next to the program) |
 | `-serve`        | Run the media server for the folders instead of organizing them         |
 | `-port N`       | With `-serve`: HTTP port (default 8200)                                 |
 | `-name NAME`    | With `-serve`: the name clients show (default: the host name)          |
@@ -631,14 +631,18 @@ the page says so. `mediakeeper -setup` enters the API keys in a terminal.
 (`TMDB_API_KEY`, `MEDIAKEEPER_HWACCEL`, …) is used instead of the saved one,
 and the settings page shows it locked, with what sets it.
 
-**Where things are.** The database is `mediakeeper.db` next to `config.yaml`,
-which is next to the program. Where the program's folder cannot be written
-to (`/usr/local/bin`, a package manager's folder), they are kept in
-`~/.config/mediakeeper/` instead; in Docker in `/config/mediakeeper/`.
+**Where things are.** The database, `mediakeeper.db`, and `config.yaml` are
+kept together in one folder: next to the program, or — where the program's
+folder cannot be written to (`/usr/local/bin`, a package manager's folder) —
+in `~/.config/mediakeeper/`; in Docker in `/config` (earlier images used
+`/config/mediakeeper`, which is still used while it is there). `-config` or
+`MEDIAKEEPER_CONFIG` names another folder (or a `.yaml` file). Nothing is
+written, and no folder made, before there is something to keep: on a first
+start that is the end of the setup in the browser.
 
 | What | Flag | Environment variable | In `config.yaml` | Default |
 |---|---|---|---|---|
-| `config.yaml` | `-config` | `MEDIAKEEPER_CONFIG` | — | next to the program |
+| the folder of `config.yaml` and the database | `-config` | `MEDIAKEEPER_CONFIG` | — | next to the program |
 | the database | `-db` | `MEDIAKEEPER_DB` | `server.database` | `mediakeeper.db` next to `config.yaml` |
 | screenshots and episode stills | `-cache` | `MEDIAKEEPER_CACHE` | — (Settings → Server) | `.cache` in the first library folder |
 
@@ -649,8 +653,11 @@ is harmless: the images are simply taken again.
 The database can also be moved in the web interface (the first-start setup,
 or **Settings → Server**): the server copies it to the new place at once,
 keeps working from there, keeps the old file as `mediakeeper.db.old` and
-writes the new place into `config.yaml` as `server.database`. In Docker,
-choose a mounted folder, or the database is lost with the container.
+writes the new place into `config.yaml` as `server.database`. That is the
+one case where `config.yaml` and the database are apart: `config.yaml` has
+to stay where the server looks for it at the start, and it is the only thing
+there. In Docker, choose a mounted folder, or the database is lost with the
+container.
 
 **`config.yaml`** now only says where the database is. Settings written into
 it — by hand, or by an earlier version — are taken into the database at the

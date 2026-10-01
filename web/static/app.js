@@ -71,6 +71,9 @@ async function start() {
   render();
 }
 
+let rendered = { path: null, query: null }; // the page last drawn
+let renders = 0;
+
 async function render() {
   clearInterval(pollTimer);
   document.querySelectorAll(".modal").forEach(m => m.remove());
@@ -78,12 +81,19 @@ async function render() {
   const [page, arg, ...rest] = path.split("/");
   // Without an account one may watch (if the server allows it), not manage.
   if (!me || (page === "login" && me.guest)) return renderLogin();
+  // Another order or filter of the same list needs no new library (the page
+  // drawn again as it is does: something changed); a page drawn later than
+  // this one wins over it.
+  const reorder = path === rendered.path && (query || "") !== rendered.query;
+  const mine = ++renders;
   try {
-    if (!library || ["movies", "shows", "movie", "show", "browse", "mine"].includes(page)) library = await api("library");
+    if (!library || (!reorder && ["movies", "shows", "movie", "show", "browse", "mine"].includes(page))) library = await api("library");
   } catch (err) {
     if (!me) return;
     return shell(page, h("p", { class: "error" }, err.message));
   }
+  if (mine !== renders) return;
+  rendered = { path, query: query || "" };
   document.title = library.name;
   switch (page) {
     case "shows": return backAtTitle(renderList("shows", library.shows.map(asShow), query));
@@ -157,10 +167,16 @@ function shell(page, ...content) {
     link("movies", "Movies"), link("shows", "Shows"), !me.guest && link("mine", "My"),
     me.admin && link("downloads", "Downloads", h("span", { class: "badge hidden attention" })),
     me.admin && link("settings", "Settings"));
-  const search = h("input", {
+  // The search field of the page before stays, as it is — what is typed,
+  // the caret, the keyboard of a phone — when the list is drawn again in
+  // another order or with other filters.
+  const before = document.querySelector("header input[type=search]");
+  const typing = before && document.activeElement === before;
+  const search = before || h("input", {
     type: "search", placeholder: "Search", "aria-label": "Search", value: searchTerm,
     oninput: () => { searchTerm = search.value; applySearch(); },
   });
+  if (before && before.value !== searchTerm) before.value = searchTerm;
   app.replaceChildren(
     h("header", { class: "glass" },
       h("a", { class: "brand", href: "#movies" }, library ? library.name : "MediaKeeper"),
@@ -173,7 +189,10 @@ function shell(page, ...content) {
     h("main", {}, ...content),
     sections("tabbar glass"));
   if (!document.querySelector("main .grid")) search.remove(); // it filters the posters of a list
-  else applySearch();
+  else {
+    applySearch();
+    if (typing) search.focus({ preventScroll: true });
+  }
   window.scrollTo(0, 0);
   if (me.admin) refreshBadge();
 }
@@ -1583,8 +1602,10 @@ function pathInput(input, file) {
   return h("div", { class: "row path-input" }, h("div", { class: "grow" }, input), choose);
 }
 
-// In a container only mounted folders outlive it.
-const dockerNote = state => state.container ? " In Docker, keep it in a mounted folder (as /config), or it is lost with the container." : "";
+// Notes under the database's place: how the server finds it again, and that
+// in a container only mounted folders outlive it.
+const dockerNote = state => (state.configDir ? ` Kept anywhere but ${state.configDir}, a small config.yaml there says where it is.` : "") +
+  (state.container ? " In Docker, keep it in a mounted folder (as /config), or it is lost with the container." : "");
 
 // keyInput is an API key field: a key that is set is not sent back to the
 // browser; typing replaces it, the button removes it.

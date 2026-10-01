@@ -259,7 +259,11 @@ what a flag or variable sets is recorded in `locked` and shown read-only.
 
 `config.yaml` (`config.go`) is found at `-config`, else `MEDIAKEEPER_CONFIG`,
 else next to the binary (when writable and not a temporary `go run` build),
-else `~/.config/mediakeeper/`. It only says where the database is
+else `~/.config/mediakeeper/`; a path that is not a `.yaml` file is a
+folder, made only when something is written (`earlierLayout` keeps the
+Docker image's old `/config/mediakeeper` while it is there; the image now
+uses `/config`). The database is next to it by default. It only says where
+the database is
 (`server.database`); anything else in it — an earlier version's settings, or
 a setting put in by hand — is merged into the database at the start
 (`takeSettingsFile`), and the file is rewritten (the old one kept as

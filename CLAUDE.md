@@ -208,6 +208,10 @@ GOTOOLCHAIN=go1.24.0 go build .      # go.mod promises Go 1.24: check after touc
 - **Settings location**: `-config` > `MEDIAKEEPER_CONFIG` > `config.yaml`
   next to the binary (if writable and not a `go run`/`go test` build) >
   `~/.config/mediakeeper/`; old settings move next to the binary once.
-  Docker sets `MEDIAKEEPER_CONFIG=/config/mediakeeper/config.yaml`.
+  A `-config`/`MEDIAKEEPER_CONFIG` path that is not a `.yaml` file is a
+  folder, even one not made yet (made only when something is written).
+  Docker sets `MEDIAKEEPER_CONFIG=/config` (`earlierLayout` keeps an old
+  `/config/mediakeeper` in use). Fresh starts — server or organizer — keep
+  the DB in memory until there is something to save.
 - **Files that already have an `.nfo` are left alone** by the organizer
   unless `-refresh`.

@@ -161,3 +161,35 @@ func TestConfigMovesToProgramFolder(t *testing.T) {
 		t.Errorf("fallback: %s", got)
 	}
 }
+
+// -config with a folder that is not there yet: config.yaml and the database
+// go into it, and it is made only when something is kept — organizing
+// without new keys keeps nothing.
+func TestConfigFolderMadeLate(t *testing.T) {
+	setup(t, Config{})
+	defer func() { configFile = "" }()
+	dir := filepath.Join(t.TempDir(), "data", "mediakeeper")
+	lib := t.TempDir()
+	mustRun(t, "", "-config", dir, "-yes", "-dry-run", lib)
+	if configPath() != filepath.Join(dir, "config.yaml") || fileExists(filepath.Dir(dir)) {
+		t.Fatalf("config %s; made early: %v", configPath(), fileExists(filepath.Dir(dir)))
+	}
+	configFile = ""
+	mustRun(t, "omdbkey\n\n\n", "-config", dir, "-setup")
+	if !fileExists(filepath.Join(dir, "mediakeeper.db")) || fileExists(filepath.Join(dir, "config.yaml")) {
+		t.Errorf("after -setup: database there %v, config.yaml there %v", fileExists(filepath.Join(dir, "mediakeeper.db")), fileExists(filepath.Join(dir, "config.yaml")))
+	}
+
+	// The Docker image's earlier layout: /config/mediakeeper while it is there.
+	configFile = ""
+	docker := t.TempDir()
+	os.MkdirAll(filepath.Join(docker, "mediakeeper"), 0o755)
+	os.WriteFile(filepath.Join(docker, "mediakeeper", "mediakeeper.db"), nil, 0o600)
+	if useConfig(docker); configFile != filepath.Join(docker, "mediakeeper", "config.yaml") {
+		t.Errorf("earlier layout: %s", configFile)
+	}
+	os.WriteFile(filepath.Join(docker, "mediakeeper.db"), nil, 0o600)
+	if useConfig(docker); configFile != filepath.Join(docker, "config.yaml") {
+		t.Errorf("new layout: %s", configFile)
+	}
+}

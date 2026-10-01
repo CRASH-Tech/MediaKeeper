@@ -44,8 +44,8 @@ type ServerConfig struct {
 
 // Where the settings live, in this order:
 //
-//  1. the file given with -config, or in MEDIAKEEPER_CONFIG (a folder means
-//     config.yaml in it);
+//  1. the file given with -config, or in MEDIAKEEPER_CONFIG (a folder, or a
+//     path that is not a .yaml file, means config.yaml in it);
 //  2. config.yaml in the folder of the program;
 //  3. where the program cannot keep it — a folder it may not write to, like
 //     /usr/local/bin, or the temporary build of "go run" — config.yaml in
@@ -58,17 +58,35 @@ type ServerConfig struct {
 
 var configFile string // set by useConfig
 
-// useConfig makes path the settings file: -config.
+// useConfig makes path the settings file: -config. A path that is not a
+// .yaml file is a folder, config.yaml and the database in it — also one not
+// made yet: it is made when there is something to keep in it.
 func useConfig(path string) error {
 	abs, err := filepath.Abs(expandHome(path))
 	if err != nil {
 		return err
 	}
-	if st, err := os.Stat(abs); err == nil && st.IsDir() {
+	st, err := os.Stat(abs)
+	if ext := strings.ToLower(filepath.Ext(abs)); (err == nil && st.IsDir()) || (err != nil && ext != ".yaml" && ext != ".yml") {
 		abs = filepath.Join(abs, "config.yaml")
 	}
-	configFile = abs
+	configFile = earlierLayout(abs)
 	return nil
+}
+
+// earlierLayout: the Docker image kept everything in /config/mediakeeper,
+// and now in /config itself. While the folder named holds nothing of
+// MediaKeeper's and its "mediakeeper" folder does, that one is used.
+func earlierLayout(file string) string {
+	dir := filepath.Dir(file)
+	if exists(file) || exists(filepath.Join(dir, "mediakeeper.db")) || filepath.Base(dir) == "mediakeeper" {
+		return file
+	}
+	old := filepath.Join(dir, "mediakeeper", "config.yaml")
+	if exists(old) || exists(filepath.Join(dir, "mediakeeper", "mediakeeper.db")) {
+		return old
+	}
+	return file
 }
 
 func configPath() string {
