@@ -1502,31 +1502,46 @@ const joinPath = (dir, name) => dir.endsWith("/") ? dir + name : dir + "/" + nam
 const rootKinds = [["", "Movies and shows"], ["movies", "Movies"], ["shows", "Shows"]];
 
 // folderPicker walks the server's folders to choose one: the server, not
-// the browser, has to read the library.
+// the browser, has to read the library. A new folder can be made in the one
+// that is open.
 function folderPicker(startAt, choose) {
   const error = h("p", { class: "error" });
   const where = h("input", { type: "text", "aria-label": "Folder", spellcheck: false, autocomplete: "off" });
   const list = h("div", { class: "folders" });
   const note = h("p", { class: "dim" });
+  const name = h("input", { type: "text", placeholder: "New folder", "aria-label": "Name of the new folder", spellcheck: false, autocomplete: "off" });
+  const making = h("form", { class: "row new-folder hidden", onsubmit: e => { e.preventDefault(); make(); } },
+    icon("folder"), h("div", { class: "grow" }, name), h("button", { class: "small primary" }, "Make"),
+    h("button", { type: "button", class: "small", onclick: () => making.classList.add("hidden") }, "Cancel"));
+  const newButton = h("button", { type: "button", onclick: () => { making.classList.remove("hidden"); name.value = ""; name.focus(); } }, "+ New folder");
+  let current = "";
   const close = () => box.remove();
+  const show = d => {
+    current = d.path;
+    where.value = d.path;
+    making.classList.add("hidden");
+    fill(list,
+      d.parent && h("button", { type: "button", class: "folder", onclick: () => open(d.parent) }, icon("up"), "Up"),
+      d.folders.map(f => h("button", { type: "button", class: "folder", onclick: () => open(joinPath(d.path, f)) }, icon("folder"), f)),
+      !d.folders.length && h("p", { class: "dim empty-folder" }, "No folders inside."));
+    newButton.disabled = !d.writable;
+    note.textContent = d.writable ? "" : "The server can read this folder but not write to it: nothing can be made or kept in it.";
+  };
   const open = async path => {
     error.textContent = "";
-    try {
-      const d = await api("settings/folders?path=" + encodeURIComponent(path || ""));
-      where.value = d.path;
-      fill(list,
-        d.parent && h("button", { type: "button", class: "folder", onclick: () => open(d.parent) }, icon("up"), "Up"),
-        d.folders.map(f => h("button", { type: "button", class: "folder", onclick: () => open(joinPath(d.path, f)) }, icon("folder"), f)),
-        !d.folders.length && h("p", { class: "dim" }, "No folders inside."));
-      note.textContent = d.writable ? "" : "The server can read this folder but not write to it: downloads cannot be put here, and changes to descriptions stay in its own database.";
-    } catch (err) { error.textContent = err.message; }
+    try { show(await api("settings/folders?path=" + encodeURIComponent(path || ""))); } catch (err) { error.textContent = err.message; }
+  };
+  const make = async () => {
+    error.textContent = "";
+    try { show(await api("settings/folders", { json: { path: current, name: name.value } })); } catch (err) { error.textContent = err.message; }
   };
   const box = h("div", { class: "modal", onclick: e => { if (e.target === box) close(); } },
     h("div", { class: "panel glass sheet picker" },
       h("div", { class: "row" }, h("h2", { class: "grow", style: "margin:0" }, "Choose a folder"), h("button", { class: "small", type: "button", onclick: close }, "Close")),
       h("form", { class: "row where", onsubmit: e => { e.preventDefault(); open(where.value); } }, where, h("button", { class: "small" }, "Go")),
-      list, note, error,
-      h("div", { class: "row end" }, h("button", { class: "primary", type: "button", onclick: () => { close(); choose(where.value); } }, "Use this folder"))));
+      list, making, note, error,
+      h("div", { class: "row picker-buttons" }, newButton, h("span", { class: "spacer" }),
+        h("button", { class: "primary", type: "button", onclick: () => { close(); choose(current || where.value); } }, "Use this folder"))));
   document.body.append(box);
   open(startAt);
 }
@@ -1537,13 +1552,15 @@ function folderEditor(roots, disabled) {
   const box = h("div", { class: "roots" });
   const draw = () => fill(box,
     roots.length ? roots.map((r, i) => h("div", { class: "root-row" },
-      h("div", { class: "root-path" }, h("span", {}, r.path),
+      h("div", { class: "root-path" }, icon("folder"), h("div", {}, h("div", {}, r.path),
         r.missing && h("small", { class: "error" }, "not there now"),
-        i === 0 && roots.length > 1 && h("small", { class: "dim" }, "downloads go here")),
-      h("select", { "aria-label": "What it holds", disabled, onchange: e => { r.kind = e.target.value; } },
-        rootKinds.map(([k, label]) => h("option", { value: k, selected: (r.kind || "") === k }, label))),
-      !disabled && i > 0 && h("button", { type: "button", class: "small", title: "Move up", onclick: () => { roots.splice(i - 1, 0, ...roots.splice(i, 1)); draw(); } }, "↑"),
-      !disabled && h("button", { type: "button", class: "small danger", onclick: () => { roots.splice(i, 1); draw(); } }, "Remove")))
+        i === 0 && roots.length > 1 && h("small", { class: "dim" }, "downloads go here"))),
+      h("div", { class: "root-controls" },
+        h("select", { "aria-label": "What it holds", disabled, onchange: e => { r.kind = e.target.value; } },
+          rootKinds.map(([k, label]) => h("option", { value: k, selected: (r.kind || "") === k }, label))),
+        h("span", { class: "spacer" }),
+        !disabled && i > 0 && h("button", { type: "button", class: "small icon-button", title: "Move up", "aria-label": "Move up", onclick: () => { roots.splice(i - 1, 0, ...roots.splice(i, 1)); draw(); } }, icon("up")),
+        !disabled && h("button", { type: "button", class: "small danger", onclick: () => { roots.splice(i, 1); draw(); } }, "Remove"))))
       : h("p", { class: "dim" }, "No folders yet."),
     !disabled && h("button", { type: "button", onclick: () => folderPicker(roots.length ? roots[roots.length - 1].path.replace(/\/[^/]+\/?$/, "") || "/" : "", path => {
       if (!roots.some(r => r.path === path)) roots.push({ path, kind: "" });

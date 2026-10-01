@@ -284,3 +284,65 @@ func TestMoveDatabase(t *testing.T) {
 		t.Errorf("a locked database moved")
 	}
 }
+
+// On the very first start nothing is written until the setup says where the
+// database goes; then it is made there, with what the setup chose.
+func TestSetupMakesDatabase(t *testing.T) {
+	setup(t, Config{})
+	dir := t.TempDir()
+	configFile = filepath.Join(dir, "config.yaml")
+	defer func() { configFile = "" }()
+	def := filepath.Join(dir, "mediakeeper.db")
+	if !freshStart(def, filepath.Join(dir, "server.json"), false) || freshStart(def, "", true) {
+		t.Fatal("freshStart")
+	}
+	for _, chosen := range []string{"", filepath.Join(t.TempDir(), "data")} {
+		store, err := OpenMemoryAuth(def)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := NewServer(ServerOptions{Auth: store, Name: "New", Port: 8200}, func(string, ...any) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := httptest.NewServer(s.Handler())
+		b := newBrowser(t, srv, "")
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Errorf("written before the setup: %v", entries)
+		}
+		// A folder can be made from the picker, before the setup too.
+		var made struct{ Path string }
+		if status, body := b.post("/api/settings/folders", map[string]string{"path": t.TempDir(), "name": "Films"}); status != 200 {
+			t.Errorf("making a folder: %d %s", status, body)
+		} else if mustUnmarshal(t, body, &made); filepath.Base(made.Path) != "Films" || !fileExists(made.Path) {
+			t.Errorf("made: %+v", made)
+		}
+		if status, _ := b.post("/api/settings/folders", map[string]string{"path": t.TempDir(), "name": "../x"}); status != 400 {
+			t.Errorf("a name with a slash made a folder")
+		}
+		req := map[string]any{"user": "me", "password": "secret"}
+		want := def
+		if chosen != "" {
+			req["database"], want = chosen, filepath.Join(chosen, "mediakeeper.db")
+		}
+		if status, body := b.post("/api/setup", req); status != 200 {
+			t.Fatalf("setup: %d %s", status, body)
+		}
+		if s.auth.InMemory() || s.auth.Path() != want || !fileExists(want) || fileExists(want+".old") {
+			t.Errorf("database %s (in memory %v), want %s", s.auth.Path(), s.auth.InMemory(), want)
+		}
+		if file := mustLoad(t); file.Server.Database != map[bool]string{true: "", false: want}[chosen == ""] {
+			t.Errorf("config.yaml says %q", file.Server.Database)
+		}
+		var users int
+		s.auth.conn().QueryRow(`SELECT COUNT(*) FROM users`).Scan(&users)
+		if _, ok, _ := s.auth.Settings(); !ok || users != 1 {
+			t.Errorf("the account or the settings are not in the new database")
+		}
+		srv.Close()
+		s.dl.Close()
+		store.Close()
+		os.Remove(def)
+		os.Remove(configFile)
+	}
+}

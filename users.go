@@ -87,6 +87,7 @@ type session struct {
 type Auth struct {
 	db       atomic.Pointer[sql.DB] // swapped when the database moves (MoveTo)
 	path     atomic.Pointer[string]
+	memory   atomic.Bool // not on disk yet: the first start has not chosen its place
 	ServerID string
 
 	mu       sync.Mutex
@@ -237,9 +238,34 @@ func OpenAuth(path, legacy string) (*Auth, error) {
 	return a, nil
 }
 
+// OpenMemoryAuth opens a database that is only in memory, for a first
+// start: the setup asks where the database is to be and moves it there
+// (MoveTo), so that nothing is created before that. path is where it would
+// be by default.
+func OpenMemoryAuth(path string) (*Auth, error) {
+	db, err := openDB("")
+	if err != nil {
+		return nil, err
+	}
+	a := &Auth{sessions: map[string]*session{}, watched: map[string]map[string]*Progress{}}
+	a.db.Store(db)
+	a.path.Store(&path)
+	a.memory.Store(true)
+	if err := a.load(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return a, nil
+}
+
+// openDB opens the database file, or with "" one in memory (which lives as
+// long as its only connection: database/sql keeps it open).
 func openDB(path string) (*sql.DB, error) {
 	dsn := "file:" + (&url.URL{Path: path}).EscapedPath() +
 		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+	if path == "" {
+		dsn = ":memory:?_pragma=foreign_keys(1)"
+	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -256,8 +282,11 @@ func (a *Auth) conn() *sql.DB { return a.db.Load() }
 
 func (a *Auth) Close() error { return a.conn().Close() }
 
-// Path is the database file.
+// Path is the database file (for one in memory, where it would be).
 func (a *Auth) Path() string { return *a.path.Load() }
+
+// InMemory tells whether the database is not on disk yet.
+func (a *Auth) InMemory() bool { return a.memory.Load() }
 
 // canMoveTo checks a new place for the database before anything changes.
 func canMoveTo(path string) error {
@@ -270,7 +299,8 @@ func canMoveTo(path string) error {
 // MoveTo moves the database to another file while the server runs. SQLite
 // copies it (VACUUM INTO: consistent even while it is written) over the
 // only connection, so nothing is written meanwhile; then the new file is
-// used and the old one is kept as <old>.old.
+// used and the old one is kept as <old>.old. A database in memory is
+// written to disk this way for the first time.
 func (a *Auth) MoveTo(path string) error {
 	if err := canMoveTo(path); err != nil {
 		return err
@@ -295,9 +325,12 @@ func (a *Auth) MoveTo(path string) error {
 	os.Chmod(path, 0o600)
 	a.db.Store(db)
 	a.path.Store(&path)
+	wasMemory := a.memory.Swap(false)
 	c.Close()
 	old.Close()
-	os.Rename(oldPath, oldPath+".old")
+	if !wasMemory {
+		os.Rename(oldPath, oldPath+".old")
+	}
 	return nil
 }
 

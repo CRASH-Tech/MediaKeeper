@@ -164,7 +164,15 @@ func run(args []string, in io.Reader, out io.Writer) error {
 	}
 
 	ui := NewUI(in, out)
-	store, err := OpenAuth(databasePath(*dbFlag, fileCfg.Server.Database), filepath.Join(filepath.Dir(configPath()), "server.json"))
+	dbPath, legacy := databasePath(*dbFlag, fileCfg.Server.Database), filepath.Join(filepath.Dir(configPath()), "server.json")
+	var store *Auth
+	if *serve && freshStart(dbPath, legacy, *dbFlag != "" || fileCfg.Server.Database != "" || fileHasSettings(fileCfg)) {
+		// Nothing to keep yet: the database stays in memory until the setup
+		// in the browser says where it goes.
+		store, err = OpenMemoryAuth(dbPath)
+	} else {
+		store, err = OpenAuth(dbPath, legacy)
+	}
 	if err != nil {
 		return err
 	}

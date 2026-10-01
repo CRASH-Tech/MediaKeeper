@@ -604,7 +604,7 @@ func (s *Server) newDatabasePath(path string) (string, error) {
 	if st, err := os.Stat(path); (err == nil && st.IsDir()) || filepath.Ext(path) == "" {
 		path = filepath.Join(path, "mediakeeper.db")
 	}
-	if path == s.auth.Path() {
+	if path == s.auth.Path() && !s.auth.InMemory() {
 		return "", nil
 	}
 	if locked != "" {
@@ -615,22 +615,55 @@ func (s *Server) newDatabasePath(path string) (string, error) {
 
 // moveDatabase moves the database while the server runs and writes its new
 // place into config.yaml, where the next start looks for it.
+// (The first time, from memory, it is created there.)
 func (s *Server) moveDatabase(path string) error {
-	old := s.auth.Path()
+	old, created := s.auth.Path(), s.auth.InMemory()
 	if err := s.auth.MoveTo(path); err != nil {
 		return err
 	}
-	if err := writeBootstrapConfig(configPath(), path); err != nil {
-		return fmt.Errorf("the database is in %s now, but config.yaml could not say so (%v): start the server with -db %s", path, err, path)
+	// Where it is by default, config.yaml need not say anything, unless it
+	// says something else.
+	file, _, _ := loadConfig()
+	if path != filepath.Join(filepath.Dir(configPath()), "mediakeeper.db") || file.Server.Database != "" {
+		if err := writeBootstrapConfig(configPath(), path); err != nil {
+			return fmt.Errorf("the database is in %s now, but config.yaml could not say so (%v): start the server with -db %s", path, err, path)
+		}
 	}
-	s.log("the database moved from %s to %s (the old file is kept as %s.old)", old, path, filepath.Base(old))
+	if created {
+		s.log("the database is created: %s", path)
+	} else {
+		s.log("the database moved from %s to %s (the old file is kept as %s.old)", old, path, filepath.Base(old))
+	}
 	return nil
 }
 
 // foldersAPI serves GET /api/settings/folders?path=…: the folders in a
-// folder of the server, to choose a library folder from.
+// folder of the server, to choose a library folder from; POST {path, name}
+// makes a new folder there and answers with what is in it.
 func (s *Server) foldersAPI(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
+	if r.Method == http.MethodPost {
+		var req struct{ Path, Name string }
+		if err := readJSON(r, &req); err != nil {
+			apiError(w, http.StatusBadRequest, err)
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+			apiError(w, http.StatusBadRequest, errors.New("a folder name cannot be empty or hold a slash"))
+			return
+		}
+		path = filepath.Join(filepath.Clean(expandHome(req.Path)), name)
+		if !filepath.IsAbs(path) {
+			apiError(w, http.StatusBadRequest, errors.New("the folder is given by its full path"))
+			return
+		}
+		if err := os.Mkdir(path, 0o755); err != nil {
+			apiError(w, http.StatusBadRequest, fmt.Errorf("cannot make the folder: %v", err))
+			return
+		}
+		s.log("folder made: %s", path)
+	}
 	if path == "" {
 		path = "/"
 		if home, err := os.UserHomeDir(); err == nil && os.Getenv("MEDIAKEEPER_CONFIG") == "" {
@@ -641,6 +674,14 @@ func (s *Server) foldersAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	path = filepath.Clean(expandHome(path))
+	// A place not made yet (the suggested folder of the database): the
+	// nearest folder above it that is there.
+	for st, err := os.Stat(path); err != nil || !st.IsDir(); st, err = os.Stat(path) {
+		if filepath.Dir(path) == path {
+			break
+		}
+		path = filepath.Dir(path)
+	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		apiError(w, http.StatusBadRequest, fmt.Errorf("cannot read %s: %v", path, err))
@@ -669,6 +710,15 @@ func (s *Server) foldersAPI(w http.ResponseWriter, r *http.Request) {
 		parent = ""
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "parent": parent, "folders": folders, "writable": writable})
+}
+
+// freshStart tells whether a server starts for the very first time: no
+// database, nothing to import, no place for it chosen (chosen: by -db or
+// config.yaml) and no administrator given in the environment. Then nothing
+// is written before the setup in the browser.
+func freshStart(dbPath, legacy string, chosen bool) bool {
+	return !chosen && os.Getenv("MEDIAKEEPER_DB") == "" && os.Getenv("MEDIAKEEPER_ADMIN_PASSWORD") == "" &&
+		!exists(dbPath) && !exists(legacy)
 }
 
 // inContainer: in Docker, /media is the library the compose file mounts
@@ -720,6 +770,10 @@ func (s *Server) setupAPI(w http.ResponseWriter, r *http.Request) {
 			apiError(w, http.StatusForbidden, errors.New("the server is set up already: sign in"))
 			return
 		}
+		if strings.TrimSpace(req.User) == "" {
+			apiError(w, http.StatusBadRequest, errors.New("the administrator needs a name"))
+			return
+		}
 		if len(req.Password) < 4 {
 			apiError(w, http.StatusBadRequest, errors.New("the password must be at least 4 characters long"))
 			return
@@ -728,6 +782,12 @@ func (s *Server) setupAPI(w http.ResponseWriter, r *http.Request) {
 		if _, err := s.changeSettings(req.settingsChange); err != nil {
 			apiError(w, http.StatusBadRequest, err)
 			return
+		}
+		if s.auth.InMemory() { // the place was not changed: the suggested one
+			if err := s.moveDatabase(s.auth.Path()); err != nil {
+				apiError(w, http.StatusBadRequest, err)
+				return
+			}
 		}
 		if _, err := s.auth.SetUser(req.User, req.Password, true); err != nil {
 			apiError(w, http.StatusBadRequest, err)

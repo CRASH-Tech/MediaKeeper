@@ -488,11 +488,15 @@ func Serve(ui *UI, o ServerOptions) error {
 	}
 	ui.Printf("Open the address in a browser, or add it as a server in a Jellyfin app.\n")
 	if setup {
-		ui.Box("First start", []string{
+		lines := []string{
 			"There is no account yet. Open the address above in a browser: it",
 			"asks for the administrator, the library folders and the rest.",
 			"(Or start with MEDIAKEEPER_ADMIN_PASSWORD to make the account.)",
-		})
+		}
+		if s.auth.InMemory() {
+			lines = append(lines, "Nothing is written before that: the database is made where you choose.")
+		}
+		ui.Box("First start", lines)
 	}
 	if s.debug != nil {
 		ui.Printf("%s\n", ui.Yellow("Debug: every request of a Jellyfin app is logged here, and in full in "+s.debug.path))

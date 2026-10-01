@@ -236,7 +236,10 @@ The Jellyfin API always needs an account; DLNA never does.
 **The first start.** While there is no account, the web interface opens with
 a short setup: the administrator's name and password, the library folders
 (chosen from the server's folders), where the database and the screenshots
-are kept, the server's name, the language and the catalogue keys. Everything but the account can be left for later. Whoever
+are kept, the server's name, the language and the catalogue keys. Folders
+can be made in the folder picker as well. Until the setup is finished the
+server writes nothing: the database and its folder are made where the setup
+says. Everything but the account can be left for later. Whoever
 finishes it first becomes the administrator, so do it right after starting
 the server. To make the account without the browser, or to reset a forgotten
 password, start the server with `MEDIAKEEPER_ADMIN_PASSWORD` (and optionally

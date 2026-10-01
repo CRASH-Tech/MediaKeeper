@@ -270,6 +270,10 @@ the database (`-db`, `MEDIAKEEPER_DB`, `server.database`) and the cache
 (`-cache`, `MEDIAKEEPER_CACHE`, the `cache` setting).
 
 **First start**: a server may start with no account and no library folder.
+On a fresh start (`freshStart`: no database, no `server.json`, no place of
+the database chosen, no `MEDIAKEEPER_ADMIN_PASSWORD`) the database is only
+in memory (`OpenMemoryAuth`), so that nothing is written before the setup;
+the setup then writes it where it was told (`MoveTo` from memory).
 While there is no account, `/api/setup` (and the folder picker,
 `/api/settings/folders`) is open without signing in; its POST checks the
 settings, makes the administrator, signs them in and closes for good.

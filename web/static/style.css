@@ -601,16 +601,20 @@ textarea:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb,
 input:disabled, select:disabled { opacity: .55; cursor: not-allowed; }
 .save-row { margin: 4px 0 30px; }
 .save-row .error { margin: 0; }
-.row.end { justify-content: flex-end; margin-top: 12px; }
 .spacer { flex: 1; }
 details.advanced { margin-top: 14px; }
 details.advanced summary { cursor: pointer; color: var(--dim); font-size: 13.5px; font-weight: 600; margin-bottom: 10px; }
 
 .roots { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
-.root-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; width: 100%; padding: 8px 8px 8px 14px; border-radius: var(--r-md); background: var(--glass-strong); }
-.root-path { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; font-weight: 600; }
-.root-path small { font-weight: 400; }
-.root-row select { width: auto; }
+/* A library folder: its path on top, what it holds and the buttons below. */
+.root-row { display: flex; flex-direction: column; gap: 8px; width: 100%; padding: 12px 12px 10px 14px; border-radius: var(--r-md); background: var(--glass-strong); }
+.root-path { display: flex; align-items: flex-start; gap: 8px; overflow-wrap: anywhere; font-weight: 600; line-height: 1.35; }
+.root-path .icon { width: 18px; height: 18px; flex: none; color: var(--dim); margin-top: 1px; }
+.root-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.root-controls select { width: auto; padding-top: 5px; padding-bottom: 5px; font-size: 13px; }
+.root-path small { display: block; font-weight: 400; font-size: 12.5px; margin-top: 2px; }
+button.icon-button { padding: 5px 8px; }
+button.icon-button .icon { width: 15px; height: 15px; }
 
 .sources { display: flex; flex-direction: column; gap: 6px; }
 .source-row { display: flex; gap: 10px; align-items: center; padding: 6px 8px 6px 14px; border-radius: var(--r-md); background: var(--glass-strong); min-height: 44px; }
@@ -644,3 +648,8 @@ details.advanced summary { cursor: pointer; color: var(--dim); font-size: 13.5px
 .path-input { flex-wrap: nowrap; }
 .path-input .grow { min-width: 0; }
 .path-input input { width: 100%; }
+.new-folder { margin: 8px 0 0; flex-wrap: nowrap; padding: 6px 6px 6px 14px; border-radius: var(--r-md); background: var(--glass-strong); }
+.new-folder > .icon { width: 18px; height: 18px; flex: none; color: var(--dim); }
+.new-folder .grow { min-width: 0; }
+.new-folder input { width: 100%; }
+.picker-buttons { margin-top: 12px; }
