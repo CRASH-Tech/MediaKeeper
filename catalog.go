@@ -284,6 +284,7 @@ func (s *CatShow) Episodes() []*CatItem {
 type Library struct {
 	roots  []Root
 	prober *prober
+	log    func(string, ...any) // told what appears in the library and what is gone
 
 	mu      sync.Mutex
 	cat     *Catalog
@@ -310,6 +311,7 @@ func (l *Library) Catalog() (*Catalog, error) {
 	for _, it := range cat.items {
 		l.prober.request(it.Path, it.Size, it.ModTime)
 	}
+	catalogChanges(l.cat, cat, l.log)
 	l.cat, l.scanned = cat, time.Now()
 	return cat, nil
 }

@@ -114,6 +114,9 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, me)
 		return
 	case "logout":
+		if !u.Guest {
+			s.log("%s signed out from %s", u.Name, clientIP(r))
+		}
 		s.auth.Logout(s.token(r))
 		http.SetCookie(w, &http.Cookie{Name: "mk_token", Path: "/", MaxAge: -1})
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -130,7 +133,12 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			apiError(w, http.StatusForbidden, errors.New("only an administrator can change titles"))
 			return
 		}
-		s.fixAPI(w, r, arg(1), arg(2))
+		name := s.nameOf(arg(1))
+		told(w, func(w http.ResponseWriter) { s.fixAPI(w, r, arg(1), arg(2)) }, func() {
+			if r.Method == http.MethodPost {
+				s.log("%s identified %s anew", u.Name, name)
+			}
+		})
 		return
 	case "hls":
 		s.hls.api(w, r, u, parts[1:])
@@ -142,9 +150,17 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 		if arg(2) == "artwork" {
 			s.titleArtworkAPI(w, r, arg(1))
-		} else {
-			s.metaAPI(w, r, arg(1), arg(2))
+			return
 		}
+		what, name := editTold(r.Method, arg(2)), ""
+		if what != "" {
+			name = s.nameOf(arg(1))
+		}
+		told(w, func(w http.ResponseWriter) { s.metaAPI(w, r, arg(1), arg(2)) }, func() {
+			if what != "" {
+				s.log("%s %s %s", u.Name, what, name)
+			}
+		})
 		return
 	case "artwork":
 		if !u.Admin {
@@ -164,7 +180,11 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		if arg(1) == "folders" {
 			s.foldersAPI(w, r)
 		} else {
-			s.settingsAPI(w, r)
+			told(w, func(w http.ResponseWriter) { s.settingsAPI(w, r) }, func() {
+				if r.Method == http.MethodPost {
+					s.log("(the settings were changed by %s)", u.Name)
+				}
+			})
 		}
 		return
 	case "users":
@@ -228,8 +248,11 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 				// Nothing is remembered for somebody without an account.
 			} else if req.Played != nil { // marked by hand
 				s.auth.Update(u.ID, it.ID, func(p *Progress) { p.Played, p.Position = *req.Played, 0 })
+				s.log("%s marked %s as %s", u.Name, titleOf(it), map[bool]string{true: "watched", false: "not watched"}[*req.Played])
 			} else {
-				s.auth.Watch(u.ID, viewing(it), req.Position, s.lib.Duration(it).Seconds())
+				before := s.auth.Progress(u.ID, it.ID)
+				after := s.auth.Watch(u.ID, viewing(it), req.Position, s.lib.Duration(it).Seconds())
+				s.watched(u, it, before, after, req.Position, s.lib.Duration(it).Seconds(), r.URL.Query().Get("stopped") != "")
 			}
 			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 		}
@@ -255,10 +278,23 @@ func (s *Server) usersAPI(w http.ResponseWriter, r *http.Request, me *User, id s
 			apiError(w, http.StatusBadRequest, errors.New("you cannot take the administrator role from yourself"))
 			return
 		}
+		existed := false
+		for _, other := range s.auth.List() {
+			existed = existed || strings.EqualFold(other.Name, req.Name)
+		}
 		u, err := s.auth.SetUser(req.Name, req.Password, req.Admin)
 		if err != nil {
 			apiError(w, http.StatusBadRequest, err)
 			return
+		}
+		role := map[bool]string{true: "administrator", false: "viewer"}[u.Admin]
+		switch {
+		case !existed:
+			s.log("%s added the user %s (%s)", me.Name, u.Name, role)
+		case req.Password != "":
+			s.log("%s changed the password of %s", me.Name, u.Name)
+		default:
+			s.log("%s made %s an %s", me.Name, u.Name, role)
 		}
 		writeJSON(w, http.StatusOK, userJSON(u))
 	case http.MethodDelete:
@@ -266,10 +302,17 @@ func (s *Server) usersAPI(w http.ResponseWriter, r *http.Request, me *User, id s
 			apiError(w, http.StatusBadRequest, errors.New("you cannot delete yourself"))
 			return
 		}
+		name := id
+		for _, other := range s.auth.List() {
+			if other.ID == id {
+				name = other.Name
+			}
+		}
 		if err := s.auth.DeleteUser(id); err != nil {
 			apiError(w, http.StatusBadRequest, err)
 			return
 		}
+		s.log("%s deleted the user %s", me.Name, name)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)

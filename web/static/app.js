@@ -1092,15 +1092,25 @@ function openEdit(x, opts = {}) {
     // The artwork of the catalogue entry the description comes from: when
     // it could not be downloaded at the time, or to replace it.
     const note = h("span", { class: "dim" }, artNote);
+    // It runs on the server in the background (a series has a still for
+    // every episode); the sheet follows it.
     const fetchArt = async (e, replace) => {
       const buttons = e.target.parentNode.querySelectorAll("button");
       buttons.forEach(b => { b.disabled = true; });
-      note.textContent = "Downloading…";
+      note.textContent = "Starting…";
       try {
-        const res = await api(`meta/${x.id}/artwork`, { json: { replace } });
+        let job = await api(`meta/${x.id}/artwork`, { json: { replace } });
+        while (job.running) {
+          note.textContent = `Downloading… ${job.fetched} picture(s) so far`;
+          await new Promise(r => setTimeout(r, 1000));
+          if (!document.body.contains(note)) return; // the sheet was closed: it goes on without it
+          job = await api("artwork");
+        }
         saved();
+        const res = job.result || { fetched: job.fetched, problems: [], source: "" };
+        if (job.error) throw new Error(job.error);
         artNote = (res.fetched ? `${res.fetched} picture(s) downloaded from ${res.source}.` : `Nothing downloaded: ${res.source} has no other pictures for it.`) +
-          (res.problems.length ? ` Not downloaded: ${res.problems.join("; ")}` : "");
+          (res.problems.length ? ` Not downloaded: ${res.problems.slice(0, 3).join("; ")}${res.problems.length > 3 ? `, and ${res.problems.length - 3} more` : ""}.` : "");
         if (res.fetched) {
           x.poster = x.backdrop = true;
           (x.seasons || []).forEach(s => { s.poster = true; });
@@ -1383,10 +1393,10 @@ async function play(item, startAt, queue) {
   });
 
   let lastReport = 0;
-  async function report(at) {
+  async function report(at, stopped) {
     lastReport = Date.now();
     if (me.guest) return; // nothing is remembered without an account
-    try { await api("progress/" + info.id, { json: { position: at } }); } catch { /* next time */ }
+    try { await api("progress/" + info.id + (stopped ? "?stopped=1" : ""), { json: { position: at } }); } catch { /* next time */ }
   }
   const ticker = setInterval(() => { if (!video.paused && Date.now() - lastReport > 9000) report(position()); }, 2000);
   video.addEventListener("pause", () => report(position()));
@@ -1405,7 +1415,7 @@ async function play(item, startAt, queue) {
     document.removeEventListener("keydown", onKey);
     document.removeEventListener("fullscreenchange", onFullscreen);
     document.removeEventListener("webkitfullscreenchange", onFullscreen);
-    (at > 0 ? report(at) : Promise.resolve()).then(render);
+    (at > 0 ? report(at, true) : Promise.resolve()).then(render);
   }
   const onKey = e => {
     wake();

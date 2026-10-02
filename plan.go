@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -352,6 +353,7 @@ func (a *App) Apply(p *Plan) {
 	}
 	srcDirs := map[string]bool{}
 	noTool := false
+	unreachable, skipped := map[string]int{}, map[string]int{}
 	total, done := 0, 0
 	for _, it := range p.Items {
 		if it.Conflict == "" && !it.IsDir && it.Move.Src != "" {
@@ -363,6 +365,11 @@ func (a *App) Apply(p *Plan) {
 			ui.Printf("  %s\n", ui.Yellow("! "+err.Error()))
 		}
 	}
+	defer func() {
+		for host, n := range skipped {
+			warn(fmt.Errorf("%s is out of reach: %d more picture(s) not downloaded (Settings → Library → Artwork takes them later)", host, n))
+		}
+	}()
 	for _, it := range p.Items {
 		if it.Conflict != "" {
 			continue
@@ -394,7 +401,15 @@ func (a *App) Apply(p *Plan) {
 			if _, err := os.Stat(img.Dst); err == nil {
 				continue
 			}
+			host := imageHost(img.URL)
+			if unreachable[host] >= 2 { // given up on: every picture would wait for it
+				skipped[host]++
+				continue
+			}
 			if err := DownloadFile(img.URL, img.Dst); err != nil {
+				if !isHTTPStatus(err) {
+					unreachable[host]++
+				}
 				warn(fmt.Errorf("%s: %v", filepath.Base(img.Dst), err))
 				continue
 			}
@@ -494,3 +509,18 @@ func removeEmptyDirs(root string, dirs map[string]bool) []string {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// imageHost is the server of a picture's address.
+func imageHost(imageURL string) string {
+	if u, err := url.Parse(imageURL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return imageURL
+}
+
+// isHTTPStatus tells an answer of a server ("404 Not Found") from a server
+// that could not be reached.
+func isHTTPStatus(err error) bool {
+	msg := err.Error()
+	return msg != "" && msg[0] >= '0' && msg[0] <= '9'
+}

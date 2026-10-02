@@ -1242,8 +1242,13 @@ func (c *jfContext) playing() {
 	c.body(&req)
 	if it := c.cat.items[jfID(req.ItemId)]; it != nil {
 		position := time.Duration(req.PositionTicks * 100).Seconds()
-		if position > 0 || strings.HasSuffix(strings.ToLower(c.r.URL.Path), "/stopped") {
-			c.s.auth.Watch(c.u.ID, viewing(it), position, c.s.lib.Duration(it).Seconds())
+		stopped := strings.HasSuffix(strings.ToLower(c.r.URL.Path), "/stopped")
+		if position > 0 || stopped {
+			before := c.s.auth.Progress(c.u.ID, it.ID)
+			after := c.s.auth.Watch(c.u.ID, viewing(it), position, c.s.lib.Duration(it).Seconds())
+			c.s.watched(c.u, it, before, after, position, c.s.lib.Duration(it).Seconds(), stopped)
+		} else if strings.HasSuffix(strings.ToLower(c.r.URL.Path), "/playing") {
+			c.s.log("▶ %s started %s in %s", c.u.Name, titleOf(it), firstNonEmpty(jfClient(c.r, "Client"), "a Jellyfin app"))
 		}
 	}
 	c.noContent()

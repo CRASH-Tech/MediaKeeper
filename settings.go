@@ -446,6 +446,60 @@ type settingsChange struct {
 	Database     *string  `json:"database"` // where to move the database: kept in config.yaml, not in it
 }
 
+// fields names what a change sets, for the log (API keys without their
+// values).
+func (ch settingsChange) fields() []string {
+	var out []string
+	add := func(set bool, name string) {
+		if set {
+			out = append(out, name)
+		}
+	}
+	add(ch.TMDBKey != nil, "TMDB key")
+	add(ch.OMDbKey != nil, "OMDb key")
+	add(ch.KinopoiskKey != nil, "Kinopoisk key")
+	if ch.Language != nil {
+		out = append(out, "language "+*ch.Language)
+	}
+	add(ch.Sources != nil, "sources "+strings.Join(ch.Sources, ","))
+	add(ch.TMDBURL != nil || ch.TMDBImageURL != nil, "TMDB addresses")
+	if ch.Libraries != nil {
+		var paths []string
+		for _, r := range *ch.Libraries {
+			paths = append(paths, r.Path)
+		}
+		out = append(out, "library folders "+strings.Join(paths, ", "))
+	}
+	if ch.Name != nil {
+		out = append(out, "name "+*ch.Name)
+	}
+	if ch.Port != nil {
+		out = append(out, fmt.Sprintf("port %d", *ch.Port))
+	}
+	if ch.DLNA != nil {
+		out = append(out, fmt.Sprintf("DLNA %v", *ch.DLNA))
+	}
+	if ch.Guests != nil {
+		out = append(out, fmt.Sprintf("guests %v", *ch.Guests))
+	}
+	if ch.Tags != nil {
+		out = append(out, fmt.Sprintf("tags %v", *ch.Tags))
+	}
+	if ch.Cache != nil {
+		out = append(out, "cache "+*ch.Cache)
+	}
+	if ch.HWAccel != nil {
+		out = append(out, "hardware conversion "+*ch.HWAccel)
+	}
+	if ch.Database != nil {
+		out = append(out, "database "+*ch.Database)
+	}
+	if len(out) == 0 {
+		out = append(out, "nothing")
+	}
+	return out
+}
+
 var reLanguage = regexp.MustCompile(`^[a-z]{2}(-[A-Z]{2})?$`)
 
 // apply checks a change and lays it over the saved settings.
@@ -578,7 +632,7 @@ func (s *Server) changeSettings(ch settingsChange) ([]string, error) {
 		return nil, err
 	}
 	restart := s.applySettings(changed)
-	s.log("settings changed")
+	s.log("settings changed: %s", strings.Join(ch.fields(), ", "))
 	if database != "" {
 		if err := s.moveDatabase(database); err != nil {
 			return restart, err

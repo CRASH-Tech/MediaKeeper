@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -338,8 +339,18 @@ func (h *Hub) tryIMDb(p Provider, imdb string) *Match {
 }
 
 var (
-	httpClient     = &http.Client{Timeout: 20 * time.Second}
-	downloadClient = &http.Client{Timeout: 3 * time.Minute}
+	httpClient = &http.Client{Timeout: 20 * time.Second}
+	// Pictures and files: an unreachable server is given up on soon (it
+	// is the connection that times out), a slow but working one is not.
+	downloadClient = &http.Client{Timeout: 3 * time.Minute, Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConnsPerHost:   4,
+		ForceAttemptHTTP2:     true,
+	}}
 )
 
 // httpGet returns the body and the final URL (after redirects) of a 200

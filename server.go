@@ -34,6 +34,7 @@ type Server struct {
 	hwBad      hwFailures
 	subs       subtitleCache
 	artworkJob missingArtwork
+	watchLog   watchLog
 	log        func(format string, args ...any)
 
 	prober *prober
@@ -107,6 +108,7 @@ func NewServer(o ServerOptions, log func(string, ...any)) (*Server, error) {
 		}
 	}
 	s.lib = NewLibrary(roots, s.prober)
+	s.lib.log = log
 	if _, err := s.lib.Catalog(); err != nil {
 		return nil, err
 	}
@@ -360,6 +362,8 @@ func (s *Server) login(r *http.Request, name, password, device string) (*User, s
 		s.failures[ip] = append(s.failures[ip], time.Now())
 		s.loginMu.Unlock()
 		s.log("failed login as %q from %s", name, ip)
+	} else {
+		s.log("%s signed in (%s) from %s", u.Name, device, ip)
 	}
 	return u, token, err
 }

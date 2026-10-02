@@ -328,6 +328,7 @@ func (d *Downloads) Remove(id string) error {
 	}
 	os.RemoveAll(dl.dir)
 	d.save()
+	d.s.log("download %q removed (%s)", dl.Name, dl.State)
 	return nil
 }
 
@@ -1042,6 +1043,7 @@ func (d *Downloads) setPreset(dl *Download, req resolveRequest) error {
 	}
 	p.AsMovie = true // a single file of a series is the whole series, as the console asks
 	d.set(dl, func() { dl.Preset = p })
+	d.s.log("download %q: will be filed as %s", dl.Name, p.Label)
 	d.save()
 	return nil
 }
@@ -1111,6 +1113,7 @@ func (d *Downloads) discard(dl *Download, key string) error {
 			os.Remove(sc)
 		}
 	}
+	d.s.log("download %q: the %d file(s) of %q deleted", dl.Name, len(u.Files), u.Title)
 	d.finish(dl, a, &Plan{}, &out)
 	return nil
 }

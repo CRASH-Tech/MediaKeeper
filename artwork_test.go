@@ -38,21 +38,45 @@ func TestArtwork(t *testing.T) {
 		ids[sh.Title] = sh.ID
 	}
 
+	type job struct {
+		Running       bool
+		Done, Fetched int
+		Error         string
+		Result        *struct{ Fetched int }
+	}
+	wait := func() job {
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			var j job
+			boss.json("/api/artwork", &j)
+			if !j.Running {
+				return j
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the job did not finish")
+			}
+		}
+	}
+
 	// One movie: what is missing.
 	if status, body := boss.post("/api/meta/"+ids["Iron Man & Co"]+"/artwork", map[string]any{}); status != 200 {
 		t.Fatalf("movie artwork: %d %s", status, body)
+	}
+	if j := wait(); j.Result == nil || j.Result.Fetched == 0 {
+		t.Errorf("movie job: %+v", j)
 	}
 	if data, _ := os.ReadFile(filepath.Join(iron, "poster.jpg")); !strings.HasPrefix(string(data), "JPEG") {
 		t.Errorf("poster: %q", data)
 	}
 	// A title whose description names no entry.
-	if status, body := boss.post("/api/meta/"+ids["Some Unknown Movie"]+"/artwork", map[string]any{}); status != 400 || !strings.Contains(body, "fill it in") {
-		t.Errorf("without an entry: %d %s", status, body)
+	boss.post("/api/meta/"+ids["Some Unknown Movie"]+"/artwork", map[string]any{})
+	if j := wait(); !strings.Contains(j.Error, "fill it in") {
+		t.Errorf("without an entry: %+v", j)
 	}
 	// A series, replaced: poster and season poster anew, a still kept.
 	if status, body := boss.post("/api/meta/"+ids["Star Trek: Enterprise"]+"/artwork", map[string]any{"replace": true}); status != 200 {
 		t.Fatalf("series artwork: %d %s", status, body)
 	}
+	wait()
 	for file, want := range map[string]string{"poster.jpg": "JPEG", "season01-poster.jpg": "JPEG",
 		"Season 01/Star Trek - Enterprise S01E01-E02 - Broken Bow-thumb.jpg": "THUMB"} {
 		if data, _ := os.ReadFile(filepath.Join(ent, file)); !strings.HasPrefix(string(data), want) {
@@ -69,20 +93,21 @@ func TestArtwork(t *testing.T) {
 	if status, body := boss.post("/api/artwork", nil); status != 200 {
 		t.Fatalf("job: %d %s", status, body)
 	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		var job struct {
-			Running       bool
-			Done, Fetched int
-		}
-		boss.json("/api/artwork", &job)
-		if !job.Running {
-			if job.Done == 0 || job.Fetched == 0 || !exists(filepath.Join(iron, "poster.jpg")) {
-				t.Errorf("job: %+v", job)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the job did not finish")
-		}
+	if j := wait(); j.Done == 0 || j.Fetched == 0 || !exists(filepath.Join(iron, "poster.jpg")) {
+		t.Errorf("job: %+v", j)
+	}
+}
+
+// An image server out of reach is given up after two tries.
+func TestArtworkUnreachable(t *testing.T) {
+	var logged []string
+	a := newArtwork("X", func(f string, args ...any) { logged = append(logged, f) }, nil)
+	dir := t.TempDir()
+	for i := 0; i < 5; i++ {
+		a.get("http://127.0.0.1:1/p"+itoa(i)+".jpg", filepath.Join(dir, itoa(i)+".jpg"), false)
+	}
+	a.done()
+	if len(a.Problems) != 3 || !strings.Contains(a.Problems[2], "3 more picture(s) not tried") {
+		t.Errorf("problems: %q", a.Problems)
 	}
 }

@@ -87,6 +87,24 @@ func (s *Server) mineAPI(w http.ResponseWriter, r *http.Request, cat *Catalog, u
 			p.Note = strings.TrimSpace(*req.Note)
 		}
 	})
+	name := ""
+	if it := cat.items[id]; it != nil {
+		name = titleOf(it)
+	} else {
+		name = withYear(cat.shows[id].Title, cat.shows[id].Year)
+	}
+	switch {
+	case req.Rating != nil && *req.Rating > 0:
+		s.log("★ %s rated %s %s/5", u.Name, name, strings.TrimSuffix(strconv.FormatFloat(float64(*req.Rating)/2, 'f', 1, 64), ".0"))
+	case req.Rating != nil:
+		s.log("%s removed their rating of %s", u.Name, name)
+	case req.Planned != nil:
+		s.log("%s %s", u.Name, map[bool]string{true: "put " + name + " on their watchlist", false: "took " + name + " off their watchlist"}[*req.Planned])
+	case req.Favorite != nil:
+		s.log("%s %s", u.Name, map[bool]string{true: "added " + name + " to their favorites", false: "removed " + name + " from their favorites"}[*req.Favorite])
+	case req.Note != nil:
+		s.log("%s wrote a note on %s", u.Name, name)
+	}
 	m := map[string]any{"ok": true}
 	mineJSON(m, p)
 	writeJSON(w, http.StatusOK, m)
@@ -116,6 +134,11 @@ func (s *Server) historyAPI(w http.ResponseWriter, r *http.Request, cat *Catalog
 			}
 			apiError(w, status, err)
 			return
+		}
+		if id == "" {
+			s.log("%s cleared their history", u.Name)
+		} else {
+			s.log("%s removed an entry from their history", u.Name)
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	case http.MethodGet:

@@ -158,8 +158,11 @@ func (m *screenMaker) run() {
 			m.failed[key] = true
 		}
 		m.mu.Unlock()
+		what := map[bool]string{true: "a still", false: "screenshots"}[job.still]
 		if err != nil {
-			m.s.log("screenshots: %v", err)
+			m.s.log("screenshots: %s of %s: %v", what, m.s.nameOf(job.id), err)
+		} else {
+			m.s.log("screenshots: %s of %s taken", what, m.s.nameOf(job.id))
 		}
 		select {
 		case <-m.stop:
@@ -378,6 +381,7 @@ func (m *screenMaker) api(w http.ResponseWriter, r *http.Request, u *User, id, r
 			return
 		}
 		m.request(id, true)
+		m.s.log("%s asked for new screenshots of %s", u.Name, m.s.nameOf(id))
 		writeJSON(w, http.StatusOK, map[string]string{"state": "pending"})
 	case strings.HasSuffix(rest, ".jpg") && r.Method == http.MethodGet:
 		file := filepath.Join(m.folder(id), filepath.Base(rest))
