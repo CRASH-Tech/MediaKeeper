@@ -191,10 +191,7 @@ func (d *Downloads) Add(source string, torrent []byte, root string) (*Download, 
 	}
 	dl := &Download{ID: randomHex(8), Source: source, Name: source, State: stateDownloading, Added: time.Now(), Root: root}
 	if strings.HasPrefix(source, "magnet:") {
-		dl.Name = "magnet link"
-		if m := regexp.MustCompile(`[?&]dn=([^&]+)`).FindStringSubmatch(source); m != nil {
-			dl.Name, _ = url.QueryUnescape(m[1])
-		}
+		dl.Name = firstNonEmpty(magnetName(source), "magnet link")
 	}
 	// Downloaded on the disk it is to be filed on: the disk of the first
 	// folder may be full, and a move within a disk is instant.
@@ -596,6 +593,53 @@ func (d *Downloads) organize(dl *Download) {
 	d.finish(dl, a, plan, &out)
 }
 
+// magnetName is the name a magnet link gives (dn=), "" for anything else.
+func magnetName(source string) string {
+	if !strings.HasPrefix(source, "magnet:") {
+		return ""
+	}
+	if m := regexp.MustCompile(`[?&]dn=([^&]+)`).FindStringSubmatch(source); m != nil {
+		name, _ := url.QueryUnescape(m[1])
+		return name
+	}
+	return ""
+}
+
+var reCount = regexp.MustCompile(`(?i)\b(сезон|сезоны|серии|серия|выпуски|season|seasons|episodes?)\b`)
+
+// namesOf reads the titles in a download's name as trackers write them —
+// "Russian / Original / Сезон: 1-8 / Серии: 1-177 (people) [years, country,
+// genres]" — and the year it began. A link is not a name.
+func namesOf(name string) (titles []string, year int) {
+	if name == "" || strings.Contains(name, "://") || name == "magnet link" {
+		return nil, 0
+	}
+	if m := reYear.FindString(name[max(0, strings.Index(name, "[")):]); m != "" {
+		year = atoi(m)
+	}
+	s := name
+	if i := strings.Index(s, "["); i >= 0 { // the details, maybe cut short
+		s = s[:i]
+	}
+	s = reParen.ReplaceAllString(s, " ")
+	if i := strings.Index(s, "("); i >= 0 {
+		s = s[:i]
+	}
+	for _, part := range strings.Split(s, "/") {
+		part = strings.TrimSpace(part)
+		if part == "" || strings.Contains(part, ":") || reCount.MatchString(part) {
+			continue
+		}
+		if t, y := cleanTitle(part); t != "" && len(titles) < 3 {
+			titles = append(titles, t)
+			if year == 0 {
+				year = y
+			}
+		}
+	}
+	return titles, year
+}
+
 // seriesOnly tells whether a download is known to be a series: one was named
 // for it, or it goes to a library folder of series only and holds several
 // videos (one alone, sent there for the room, may well be a movie).
@@ -619,6 +663,32 @@ func (d *Downloads) seriesOnly(dl *Download, videos int) bool {
 // are episodes even when only numbered ("01.avi", "Серия 5"), and they are
 // one series however their names spell it.
 func (d *Downloads) group(dl *Download, files []*MediaFile) []*Unit {
+	units := d.groupFiles(dl, files)
+	// One title: the tracker's name of the download names it too, often in
+	// two languages ("Доктор Хаус / House M.D. / Сезон: 1-8 … [2004-2012, …").
+	if len(units) == 1 {
+		d.mu.Lock()
+		names := []string{dl.Name, magnetName(dl.Source)} // the torrent's own name replaces the magnet's
+		d.mu.Unlock()
+		u := units[0]
+		seen := map[string]bool{norm(u.Title): true}
+		for _, name := range names {
+			titles, year := namesOf(name)
+			for _, t := range titles {
+				if !seen[norm(t)] {
+					seen[norm(t)] = true
+					u.Alt = append(u.Alt, t)
+				}
+			}
+			if u.Year == 0 {
+				u.Year = year
+			}
+		}
+	}
+	return units
+}
+
+func (d *Downloads) groupFiles(dl *Download, files []*MediaFile) []*Unit {
 	if !d.seriesOnly(dl, len(files)) {
 		return Group(files)
 	}

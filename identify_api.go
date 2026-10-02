@@ -52,6 +52,9 @@ func candidatesFor(a *App, u *Unit, query string) []candidate {
 		found = a.search(u.Kind, title, year)
 	} else {
 		found = a.search(u.Kind, u.Title, u.Year)
+		for _, alt := range u.Alt {
+			found = mergeFound(found, a.search(u.Kind, alt, u.Year))
+		}
 		if cyr := toCyrillic(u.Title); cyr != "" {
 			found = mergeFound(found, a.search(u.Kind, cyr, u.Year))
 		}

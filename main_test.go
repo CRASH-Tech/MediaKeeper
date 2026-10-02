@@ -963,3 +963,35 @@ func mustRead(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// The titles a tracker's name of a download gives.
+func TestNamesOf(t *testing.T) {
+	for name, want := range map[string]string{
+		"Доктор Хаус / House M.D. / Сезон: 1-8 (8) / Серии: 1-177 (177) (Брайан Сингер / Bryan Singer, Дэвид Шор / David Shore) [2004-2012, США, медицина, коме": "Доктор Хаус|House M.D 2004",
+		"Мятеж / Mutiny (2025) WEB-DLRip":         "Мятеж|Mutiny 2025",
+		"House.M.D.2004-2012.bd.web-dlrip_[teko]": "House M D 2004",
+		"https://host/file.mkv":                   " 0",
+		"magnet link":                             " 0",
+	} {
+		titles, year := namesOf(name)
+		if got := strings.Join(titles, "|") + " " + itoa(year); got != want {
+			t.Errorf("%s: %q, want %q", name, got, want)
+		}
+	}
+}
+
+// "House M D" is House of the same year; a longer extra word is not a match.
+func TestAutoPickShortWords(t *testing.T) {
+	rs := []SearchResult{{Title: "House", Year: 2004, ID: "1"}, {Title: "House of Cards", Year: 2013, ID: "2"}}
+	if r := autoPick("House M D", 2004, rs); r == nil || r.ID != "1" {
+		t.Errorf("House M D: %+v", r)
+	}
+	for _, q := range []struct {
+		title string
+		year  int
+	}{{"House M D", 2005}, {"House Hunters", 2004}, {"House M D", 0}} {
+		if r := autoPick(q.title, q.year, rs); r != nil {
+			t.Errorf("%s (%d) picked %+v", q.title, q.year, r)
+		}
+	}
+}

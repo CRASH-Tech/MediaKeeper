@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -23,6 +24,13 @@ func autoPick(title string, year int, rs []SearchResult) *SearchResult {
 	for i := range rs {
 		if norm(rs[i].Title) == q || norm(rs[i].OriginalTitle) == q {
 			exact = append(exact, &rs[i])
+		}
+	}
+	if len(exact) == 0 && year > 0 { // "House M D" is "House"; but only of the same year
+		for i := range rs {
+			if r := &rs[i]; r.Year == year && (sameButShort(title, r.Title) || sameButShort(title, r.OriginalTitle)) {
+				exact = append(exact, r)
+			}
 		}
 	}
 	if year == 0 {
@@ -51,6 +59,29 @@ func autoPick(title string, year int, rs []SearchResult) *SearchResult {
 		return near[0]
 	}
 	return nil
+}
+
+// sameButShort tells whether a title is the catalogue's one with a few short
+// words added — "House M D" for "House", "The Office US", "Shameless UK".
+func sameButShort(title, catalogue string) bool {
+	words := func(s string) []string {
+		return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	}
+	t, c := words(title), words(catalogue)
+	if len(c) == 0 || len(t) <= len(c) {
+		return false
+	}
+	for i := range c {
+		if t[i] != c[i] {
+			return false
+		}
+	}
+	for _, w := range t[len(c):] {
+		if utf8.RuneCountInString(w) > 2 {
+			return false
+		}
+	}
+	return true
 }
 
 var (
@@ -205,21 +236,26 @@ func (a *App) Identify(u *Unit) (*Match, error) {
 		}
 	}
 
-	found := a.search(u.Kind, u.Title, u.Year)
-	// Sources are tried in priority order: the first confident match wins.
-	for _, f := range found {
-		var sameKind []SearchResult
-		for _, r := range f.Results {
-			if r.Kind == u.Kind {
-				sameKind = append(sameKind, r)
+	// The name guessed from the files first, then the other names it goes
+	// by; sources are tried in priority order: the first confident match wins.
+	var found []Found
+	for _, title := range append([]string{u.Title}, u.Alt...) {
+		more := a.search(u.Kind, title, u.Year)
+		for _, f := range more {
+			var sameKind []SearchResult
+			for _, r := range f.Results {
+				if r.Kind == u.Kind {
+					sameKind = append(sameKind, r)
+				}
+			}
+			if r := autoPick(title, u.Year, sameKind); r != nil {
+				// A result of the wrong kind is left for the dialog to sort out.
+				if m, err := a.hub.Load(*r); err == nil && (m.Show != nil) == (u.Kind == kindTV) {
+					return m, nil
+				}
 			}
 		}
-		if r := autoPick(u.Title, u.Year, sameKind); r != nil {
-			// A result of the wrong kind is left for the dialog to sort out.
-			if m, err := a.hub.Load(*r); err == nil && (m.Show != nil) == (u.Kind == kindTV) {
-				return m, nil
-			}
-		}
+		found = mergeFound(found, more)
 	}
 	// Nothing certain, and the name may be a transliteration ("Myatezh"):
 	// add what the Cyrillic spelling finds.

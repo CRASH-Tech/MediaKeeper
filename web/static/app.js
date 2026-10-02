@@ -765,10 +765,20 @@ function identifyForm({ unit, search, resolve, st, extra, fill, ask, auto = true
     holder.classList.remove("busy");
   };
 
+  // The search belongs to the form's state, not to this drawing of it: the
+  // page is drawn anew every few seconds, and a search slower than that
+  // (a source timing out) must neither start again nor be lost.
   async function find() {
     holder.replaceChildren(h("p", { class: "dim" }, "Searching…"));
-    try { st.candidates = await search(st.query); }
-    catch (err) { st.candidates = []; error.textContent = err.message; }
+    const token = st.token = (st.token || 0) + 1; // only the latest search counts
+    const mine = st.searching = (async () => {
+      let found = [], failed = "";
+      try { found = await search(st.query); } catch (err) { failed = err.message; }
+      if (token === st.token) { st.candidates = found; st.error = failed; }
+    })();
+    await mine;
+    if (st.searching === mine) st.searching = null;
+    error.textContent = st.error;
     show();
   }
   function show() {
@@ -809,7 +819,10 @@ function identifyForm({ unit, search, resolve, st, extra, fill, ask, auto = true
     "aria-label": "ID or link", oninput: () => st.ref = ref.value });
   // Many titles waiting at once are not all searched at once: the first few
   // are, the others when asked.
-  if (st.candidates) show();
+  if (st.searching) {
+    holder.replaceChildren(h("p", { class: "dim" }, "Searching…"));
+    st.searching.then(() => { error.textContent = st.error || ""; show(); });
+  } else if (st.candidates) show();
   else if (auto) find();
   else holder.replaceChildren(h("p", { class: "dim" }, "Search to see what it could be."));
   const files = unit.files || [];

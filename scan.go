@@ -33,6 +33,7 @@ type Unit struct {
 	Title string
 	Year  int
 	Files []*MediaFile
+	Alt   []string // other names it goes by: the tracker's name of the download it came in
 }
 
 func Scan(root string) ([]*MediaFile, error) {
