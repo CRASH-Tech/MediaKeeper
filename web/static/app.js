@@ -758,11 +758,16 @@ function identifyForm({ unit, search, resolve, st, extra, fill, ask, auto = true
   const holder = h("div", {});
   const error = h("p", { class: "error" });
   const pickedSeries = () => !fill && st.picked && st.picked.kind === "tv" && unit.kind === "movie";
+  const working = h("p", { class: "dim hidden" }, "Loading the chosen title…");
   const submit = async (body, candidate) => {
-    error.textContent = "";
+    error.textContent = st.failed = "";
+    st.submitting = true;
     holder.classList.add("busy");
-    try { await resolve(body, candidate); } catch (err) { error.textContent = err.message; }
+    working.classList.remove("hidden");
+    try { await resolve(body, candidate); } catch (err) { error.textContent = st.failed = err.message; }
+    st.submitting = false;
     holder.classList.remove("busy");
+    working.classList.add("hidden");
   };
 
   // The search belongs to the form's state, not to this drawing of it: the
@@ -819,6 +824,8 @@ function identifyForm({ unit, search, resolve, st, extra, fill, ask, auto = true
     "aria-label": "ID or link", oninput: () => st.ref = ref.value });
   // Many titles waiting at once are not all searched at once: the first few
   // are, the others when asked.
+  if (st.failed) error.textContent = st.failed; // the page was drawn anew since
+  if (st.submitting) { holder.classList.add("busy"); working.classList.remove("hidden"); }
   if (st.searching) {
     holder.replaceChildren(h("p", { class: "dim" }, "Searching…"));
     st.searching.then(() => { error.textContent = st.error || ""; show(); });
@@ -835,7 +842,7 @@ function identifyForm({ unit, search, resolve, st, extra, fill, ask, auto = true
     h("div", { class: "row", style: "margin-top:10px" }, ref,
       h("button", { type: "button", onclick: () => st.ref.trim() && submit({ ref: st.ref, asMovie: unit.kind === "movie" }) }, fill && !ask ? "Fill in by ID" : "Set by ID"),
       extra),
-    error);
+    working, error);
 }
 
 // screenshots is the strip of frames from the film. The server takes them
@@ -1523,6 +1530,10 @@ async function renderDownloads() {
         h("span", { class: "state " + d.state }, stateNames[d.state] || d.state),
         h("button", { class: "small danger", onclick: () => confirm(d.state === "downloading" ? "Stop this download?" : "Remove this entry?") && alerting("", { method: "DELETE" }) },
           d.state === "downloading" ? "Stop" : "Remove")),
+      d.state === "organizing" && [
+        h("progress", d.toMove ? { value: d.moved, max: d.toMove } : {}),
+        h("div", { class: "dim" }, d.toMove ? `Moving into the library: ${d.moved} of ${d.toMove} file(s) — from another disk this takes a while`
+          : "Identifying and preparing the files…")],
       d.state === "downloading" && [
         h("progress", { value: d.done, max: d.total || 1 }),
         h("div", { class: "dim" }, d.total ? `${bytes(d.done)} of ${bytes(d.total)} · ${bytes(d.speed)}/s` : "Connecting…"),

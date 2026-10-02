@@ -352,6 +352,12 @@ func (a *App) Apply(p *Plan) {
 	}
 	srcDirs := map[string]bool{}
 	noTool := false
+	total, done := 0, 0
+	for _, it := range p.Items {
+		if it.Conflict == "" && !it.IsDir && it.Move.Src != "" {
+			total++
+		}
+	}
 	warn := func(err error) {
 		if err != nil {
 			ui.Printf("  %s\n", ui.Yellow("! "+err.Error()))
@@ -376,6 +382,9 @@ func (a *App) Apply(p *Plan) {
 			srcDirs[filepath.Dir(it.Move.Src)] = true
 			for _, sc := range it.Sidecars {
 				warn(moveFile(j, sc))
+			}
+			if done++; a.moved != nil {
+				a.moved(done, total)
 			}
 		}
 		for _, d := range it.Docs {

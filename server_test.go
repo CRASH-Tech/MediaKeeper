@@ -884,3 +884,20 @@ func TestDownloadToShowsFolder(t *testing.T) {
 	}
 	waitDownloads(t, boss)
 }
+
+// A restart while a download is being filed keeps its files: they wait.
+func TestDownloadRestartWhileFiling(t *testing.T) {
+	s, _ := serverFixture(t)
+	dl := &Download{ID: "filing", Name: "x", State: stateOrganizing, dir: filepath.Join(s.dl.dir, "filing")}
+	os.MkdirAll(dl.dir, 0o755)
+	video := filepath.Join(dl.dir, "Some.Film.2020.mkv")
+	os.WriteFile(video, []byte("video"), 0o644)
+	s.dl.mu.Lock()
+	s.dl.list = append(s.dl.list, dl)
+	s.dl.mu.Unlock()
+	s.dl.save()
+	again := NewDownloads(s)
+	if got := again.find("filing"); got == nil || got.State != stateAttention || !exists(video) {
+		t.Errorf("after a restart: %+v, file there: %v", got, exists(video))
+	}
+}

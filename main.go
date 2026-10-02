@@ -76,8 +76,9 @@ type App struct {
 	files    []*MediaFile
 
 	yes, dryRun, noTags, refresh bool
-	keepDescribed                bool // leave videos that have an .nfo alone: not renamed, not looked up, not tagged
-	noJournal                    bool // the source folder is temporary: there is nothing to undo into
+	keepDescribed                bool                  // leave videos that have an .nfo alone: not renamed, not looked up, not tagged
+	noJournal                    bool                  // the source folder is temporary: there is nothing to undo into
+	moved                        func(done, total int) // told after every video moved by Apply
 }
 
 // version is set by the release build (-ldflags "-X main.version=...").

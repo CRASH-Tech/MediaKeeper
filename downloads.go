@@ -51,6 +51,8 @@ type Download struct {
 	Preset *preset   `json:"preset,omitempty"` // what it is, said before it finished
 	Root   string    `json:"root,omitempty"`   // the library folder chosen for it; "" goes by kind
 	Dir    string    `json:"dir,omitempty"`    // where it is downloaded: .incoming on the disk it goes to
+	Moved  int       `json:"-"`                // while it is filed: videos moved into the library
+	ToMove int       `json:"-"`                // and how many there are to move
 
 	dir    string
 	cancel context.CancelFunc
@@ -72,6 +74,8 @@ type Downloads struct {
 	mu   sync.Mutex
 	list []*Download
 
+	offUntil map[string]time.Time // sources that failed lately: not waited for again for a while
+
 	ariaOnce sync.Once
 	aria     *aria2
 	ariaErr  error
@@ -81,6 +85,33 @@ func NewDownloads(s *Server) *Downloads {
 	d := &Downloads{s: s}
 	d.folder()
 	return d
+}
+
+// sourceRest is how long a source that could not be reached is left out of
+// the searches of downloads: every search waiting for its time-out again
+// would make the page hang.
+const sourceRest = 10 * time.Minute
+
+// hub gives the searches of downloads their sources: all that have not
+// failed lately; one that fails is left out for a while.
+func (d *Downloads) hub(providers []Provider, ui *UI) *Hub {
+	d.mu.Lock()
+	var fine []Provider
+	for _, p := range providers {
+		if time.Now().After(d.offUntil[p.Name()]) {
+			fine = append(fine, p)
+		}
+	}
+	d.mu.Unlock()
+	return NewHub(fine, func(name, reason string) {
+		ui.Printf("(source %s is off: %s)\n", name, reason)
+		d.mu.Lock()
+		if d.offUntil == nil {
+			d.offUntil = map[string]time.Time{}
+		}
+		d.offUntil[name] = time.Now().Add(sourceRest)
+		d.mu.Unlock()
+	})
 }
 
 var errNoLibrary = errors.New("there is no library folder yet: add one under Settings")
@@ -119,9 +150,13 @@ func (d *Downloads) load() {
 		if dl.Dir != "" {
 			dl.dir = dl.Dir
 		}
-		if dl.State == stateDownloading || dl.State == stateOrganizing {
+		switch dl.State {
+		case stateDownloading:
 			dl.State, dl.Error = stateError, "interrupted by a restart of the server"
 			os.RemoveAll(dl.dir)
+		case stateOrganizing: // downloaded: what was not filed yet waits
+			dl.State = stateAttention
+			dl.Log = strings.TrimSpace(dl.Log + "\n(filing was interrupted by a restart of the server)")
 		}
 	}
 }
@@ -527,10 +562,11 @@ func (d *Downloads) newApp(dl *Download, out *bytes.Buffer) (*App, error) {
 	d.mu.Lock()
 	roots = targetRoots(roots, dl.Root)
 	d.mu.Unlock()
-	a := &App{ui: ui, root: dl.dir, out: roots[0].Path, outSet: true, outRoots: roots, yes: true, noTags: d.s.tagsOff(), noJournal: true}
+	a := &App{ui: ui, root: dl.dir, out: roots[0].Path, outSet: true, outRoots: roots, yes: true, noTags: d.s.tagsOff(), noJournal: true,
+		moved: func(done, total int) { d.set(dl, func() { dl.Moved, dl.ToMove = done, total }) }}
 	// A new hub every time: a source that was unreachable an hour ago gets
 	// another chance.
-	a.hub = NewHub(providers, func(name, reason string) { ui.Printf("(source %s is off: %s)\n", name, reason) })
+	a.hub = d.hub(providers, ui)
 	if a.files, err = Scan(dl.dir); err != nil {
 		return nil, err
 	}
@@ -541,7 +577,7 @@ func (d *Downloads) newApp(dl *Download, out *bytes.Buffer) (*App, error) {
 // What cannot be identified with confidence stays, waiting for the
 // administrator.
 func (d *Downloads) organize(dl *Download) {
-	d.set(dl, func() { dl.State, dl.Speed, dl.busy = stateOrganizing, 0, true })
+	d.set(dl, func() { dl.State, dl.Speed, dl.busy, dl.Moved, dl.ToMove = stateOrganizing, 0, true, 0, 0 })
 	defer d.set(dl, func() { dl.busy = false })
 
 	// Release samples only get in the way.
@@ -861,7 +897,7 @@ func (d *Downloads) searcher(out *bytes.Buffer) (*App, error) {
 	}
 	ui := NewUI(strings.NewReader(""), out)
 	a := &App{ui: ui}
-	a.hub = NewHub(providers, func(name, reason string) { ui.Printf("(source %s is off: %s)\n", name, reason) })
+	a.hub = d.hub(providers, ui)
 	return a, nil
 }
 
@@ -932,22 +968,29 @@ func (d *Downloads) resolve(dl *Download, req resolveRequest) error {
 	}
 	dl.busy = true
 	d.mu.Unlock()
-	defer d.set(dl, func() { dl.busy = false })
+	done := func() { d.set(dl, func() { dl.busy = false }) }
 
 	var out bytes.Buffer
 	a, u, err := d.unit(dl, req.Key, &out)
+	var m *Match
+	if err == nil {
+		m, err = matchFor(a, u, req) // what is wrong with the choice is said at once
+	}
 	if err != nil {
+		done()
 		return err
 	}
-	m, err := matchFor(a, u, req)
-	if err != nil {
-		return err
-	}
-	plan := &Plan{}
-	d.plan(dl, a, plan, u, m, &out)
-	d.set(dl, func() { dl.State = stateOrganizing })
-	d.finish(dl, a, plan, &out)
-	return firstFailure(out.String())
+	// Filing may take long — files copied to another disk — so it goes on
+	// in the background, and the page shows its progress.
+	d.set(dl, func() { dl.State, dl.Moved, dl.ToMove = stateOrganizing, 0, 0 })
+	d.save()
+	go func() {
+		defer done()
+		plan := &Plan{}
+		d.plan(dl, a, plan, u, m, &out)
+		d.finish(dl, a, plan, &out)
+	}()
+	return nil
 }
 
 // discard deletes the files of a waiting unit.
@@ -1122,6 +1165,9 @@ func (d *Downloads) listJSON() []map[string]any {
 		}
 		if dl.State == stateDownloading {
 			m["free"] = diskFree(dl.dir) // where it is downloaded
+		}
+		if dl.State == stateOrganizing && dl.ToMove > 0 {
+			m["moved"], m["toMove"] = dl.Moved, dl.ToMove
 		}
 		if titles := d.titles(dl.Filed); len(titles) > 0 {
 			m["titles"] = titles
