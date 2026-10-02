@@ -27,13 +27,14 @@ var webFiles embed.FS
 // API, the Jellyfin-compatible API for native clients, and (unless switched
 // off) the DLNA media server.
 type Server struct {
-	live     liveSettings // the settings in force; they change while it runs (settings.go)
-	changing sync.Mutex   // one change of the settings at a time
-	setupMu  sync.Mutex   // one first-start setup at a time
-	port     int          // the port it listens on
-	hwBad    hwFailures
-	subs     subtitleCache
-	log      func(format string, args ...any)
+	live       liveSettings // the settings in force; they change while it runs (settings.go)
+	changing   sync.Mutex   // one change of the settings at a time
+	setupMu    sync.Mutex   // one first-start setup at a time
+	port       int          // the port it listens on
+	hwBad      hwFailures
+	subs       subtitleCache
+	artworkJob missingArtwork
+	log        func(format string, args ...any)
 
 	prober *prober
 	lib    *Library

@@ -1074,6 +1074,7 @@ function openEdit(x, opts = {}) {
     return holder;
   }
 
+  let artNote = "From the catalogue entry the description comes from" + (movie ? "." : "; episode stills are only added where there are none.");
   function imagesTab() {
     // card is one picture: what it is now, and a field to replace it.
     const card = (part, cls, label, note, src, has) => {
@@ -1084,11 +1085,36 @@ function openEdit(x, opts = {}) {
     const main = h("div", { class: "art-cards" },
       card("poster", "poster", "Poster", "A tall picture, JPEG or PNG.", `/api/image/${x.id}/poster`, x.poster),
       card("backdrop", "backdrop", "Backdrop", "A wide picture behind the title.", `/api/image/${x.id}/backdrop`, x.backdrop));
-    if (!movie) return h("div", {}, main,
+    // The artwork of the catalogue entry the description comes from: when
+    // it could not be downloaded at the time, or to replace it.
+    const note = h("span", { class: "dim" }, artNote);
+    const fetchArt = async (e, replace) => {
+      const buttons = e.target.parentNode.querySelectorAll("button");
+      buttons.forEach(b => { b.disabled = true; });
+      note.textContent = "Downloading…";
+      try {
+        const res = await api(`meta/${x.id}/artwork`, { json: { replace } });
+        saved();
+        artNote = (res.fetched ? `${res.fetched} picture(s) downloaded from ${res.source}.` : `Nothing downloaded: ${res.source} has no other pictures for it.`) +
+          (res.problems.length ? ` Not downloaded: ${res.problems.join("; ")}` : "");
+        if (res.fetched) {
+          x.poster = x.backdrop = true;
+          (x.seasons || []).forEach(s => { s.poster = true; });
+          return body.replaceChildren(imagesTab());
+        }
+        note.textContent = artNote;
+      } catch (err) { note.textContent = err.message; }
+      buttons.forEach(b => { b.disabled = false; });
+    };
+    const fromCatalogue = h("div", { class: "row tools" },
+      h("button", { onclick: e => fetchArt(e, false) }, "Download missing artwork"),
+      h("button", { onclick: e => fetchArt(e, true) }, "Replace with the catalogue's"),
+      note);
+    if (!movie) return h("div", {}, main, fromCatalogue,
       h("h3", { class: "sub" }, "Season posters"),
       h("div", { class: "art-cards seasons" }, x.seasons.map(s => card(`season${String(s.number).padStart(2, "0")}`, "poster",
         s.number ? `Season ${s.number}` : "Specials", "", `/api/image/${s.id}/poster`, s.poster))));
-    return h("div", {}, main,
+    return h("div", {}, main, fromCatalogue,
       h("div", { class: "row tools" },
         h("button", {
           onclick: async e => {
@@ -1705,12 +1731,40 @@ function saveRow(gather, save, after) {
 function libraryTab(view, save) {
   const roots = view.libraries.map(r => ({ ...r }));
   const locked = view.locked["libraries"];
-  return h("div", { class: "panel glass" },
+  return h("div", {}, h("div", { class: "panel glass" },
     h("h2", { style: "margin-top:0" }, "Library folders"),
     h("p", { class: "dim" }, "The folders of films and series on the server. A folder of movies or of shows holds only those, each title in its own folder; a mixed one is sorted into Movies and Shows inside. Changes show in the library at once."),
     lockedNote(view.locked, "libraries"),
     folderEditor(roots, !!locked),
-    !locked && saveRow(() => ({ libraries: roots.map(({ path, kind }) => ({ path, kind })) }), save, render));
+    !locked && saveRow(() => ({ libraries: roots.map(({ path, kind }) => ({ path, kind })) }), save, render)),
+    artworkPanel());
+}
+
+// artworkPanel takes the posters, backdrops, season posters and episode
+// stills missing in the whole library from the catalogues, in the
+// background, and shows how it goes.
+function artworkPanel() {
+  const state = h("p", { class: "dim" });
+  const button = h("button", { type: "button", onclick: async () => {
+    try { show(await api("artwork", { method: "POST" })); } catch (err) { state.textContent = err.message; }
+  } }, "Download missing artwork");
+  let timer = null;
+  const show = j => {
+    button.disabled = j.running;
+    if (j.running) {
+      state.textContent = `Looking at ${j.done + 1} of ${j.total}${j.title ? `: ${j.title}` : ""} · ${j.fetched} picture(s) so far`;
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (document.body.contains(button)) api("artwork").then(show).catch(() => {}); }, 1500);
+    } else if (j.total) {
+      state.textContent = `Done: ${j.fetched} picture(s) downloaded for ${j.done} title(s)` + (j.failed ? `; ${j.failed} could not be completed (no catalogue entry, or a source out of reach).` : ".");
+      library = null;
+    }
+  };
+  api("artwork").then(show).catch(() => {});
+  return h("div", { class: "panel glass" },
+    h("h2", { style: "margin-top:0" }, "Artwork"),
+    h("p", { class: "dim" }, "Posters, backdrops, season posters and episode stills that could not be downloaded when the titles were described — a catalogue out of reach, say — are taken again from the catalogue entries their descriptions name. Pictures that are there stay."),
+    h("div", { class: "row" }, button), state);
 }
 
 function metadataTab(view, save) {

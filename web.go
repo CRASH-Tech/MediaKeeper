@@ -140,7 +140,18 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			apiError(w, http.StatusForbidden, errors.New("only an administrator can edit descriptions"))
 			return
 		}
-		s.metaAPI(w, r, arg(1), arg(2))
+		if arg(2) == "artwork" {
+			s.titleArtworkAPI(w, r, arg(1))
+		} else {
+			s.metaAPI(w, r, arg(1), arg(2))
+		}
+		return
+	case "artwork":
+		if !u.Admin {
+			apiError(w, http.StatusForbidden, errors.New("only an administrator can fetch artwork"))
+			return
+		}
+		s.artworkAPI(w, r)
 		return
 	case "screens":
 		s.screens.api(w, r, u, arg(1), strings.Join(parts[min(2, len(parts)):], "/"))

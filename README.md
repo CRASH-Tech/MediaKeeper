@@ -270,7 +270,10 @@ reverse proxy with TLS (Caddy, nginx, Traefik).
 - **Editing** (administrators): the description, poster, backdrop, season
   posters and episodes of any title, written back into the `.nfo` and the
   file tags. **Fill in from a catalogue…** re-identifies a wrongly recognized
-  title and can rename its files accordingly.
+  title and can rename its files accordingly. Artwork that could not be
+  downloaded at the time is taken again from the catalogue entry the
+  description names — for one title in its **Images** tab, or for the whole
+  library under **Settings → Library → Artwork**.
 - Works on phones: a bottom tab bar, touch-friendly player controls.
 
 ### Jellyfin apps
@@ -397,7 +400,7 @@ and DLNA need a restart, and the page says so.
 
 | Tab | Settings |
 |---|---|
-| Library | library folders and what each holds (movies, series, both), their order |
+| Library | library folders and what each holds (movies, series, both), their order; downloading missing artwork for the whole library |
 | Descriptions | TMDB, OMDb and Kinopoisk API keys, language, sources and their order, a TMDB mirror |
 | Server | name, port, watching without signing in, DLNA, tags in downloaded files, hardware transcoding, screenshot folder, database location |
 | Users | accounts and roles |
