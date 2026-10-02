@@ -32,6 +32,8 @@ var (
 	reSquare = regexp.MustCompile(`\[[^\]]*\]`)
 	reParen  = regexp.MustCompile(`\([^)]*\)`)
 	reYear   = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
+	// "2004-2012": the years a series ran; it began in the first.
+	reYears  = regexp.MustCompile(`\b(19\d{2}|20\d{2})\s*[-–]\s*(?:19\d{2}|20\d{2})\b`)
 	reSpaces = regexp.MustCompile(`\s+`)
 	reJunk   = regexp.MustCompile(`(?i)\b(2160p|1080[pi]|720p|480p|4k|uhd|hdr|hdr10|web-?dl(rip)?|webrip|blu-?ray|bdrip|bdremux|remux|hdrip|dvdrip|dvd\d?|hdtv(rip)?|tvrip|satrip|camrip|x26[45]|h\.?26[45]|hevc|avc|xvid|divx|aac|ac3|dts|imax|amzn|extended|unrated|remastered|proper|repack|lostfilm|newstudio)\b`)
 )
@@ -77,9 +79,13 @@ func ParsePath(rel string) Guess {
 	return g
 }
 
+// asWords makes underscores word separators for the patterns ("s01e01_Pilot":
+// to \b an underscore is a letter). Places in the text stay the same.
+func asWords(stem string) string { return strings.ReplaceAll(stem, "_", " ") }
+
 func matchSeasonEpisode(stem string, g *Guess, prefix *string) bool {
 	for _, re := range []*regexp.Regexp{reSxE, reNxN, reWords, reRuNum} {
-		m := re.FindStringSubmatchIndex(stem)
+		m := re.FindStringSubmatchIndex(asWords(stem))
 		if m == nil {
 			continue
 		}
@@ -98,7 +104,7 @@ func matchSeasonEpisode(stem string, g *Guess, prefix *string) bool {
 
 func matchEpisodeOnly(stem string, g *Guess, prefix *string) bool {
 	for _, re := range []*regexp.Regexp{reEpOnly, reEpRuNum, reEpLead} {
-		m := re.FindStringSubmatchIndex(stem)
+		m := re.FindStringSubmatchIndex(asWords(stem))
 		if m == nil {
 			continue
 		}
@@ -125,7 +131,7 @@ func cleanTitle(raw string) (string, int) {
 	s := reSquare.ReplaceAllString(raw, " ")
 	s = reParen.ReplaceAllStringFunc(s, func(m string) string {
 		inner := strings.TrimSpace(m[1 : len(m)-1])
-		if reYear.MatchString(inner) && len(inner) == 4 {
+		if (reYear.MatchString(inner) && len(inner) == 4) || reYears.FindString(inner) == inner {
 			return " " + inner + " "
 		}
 		return " "
@@ -140,6 +146,9 @@ func cleanTitle(raw string) (string, int) {
 	title, year := s, 0
 	maxYear := time.Now().Year() + 1
 	ms := reYear.FindAllStringIndex(s, -1)
+	if r := reYears.FindStringSubmatchIndex(s); r != nil && strings.TrimSpace(s[:r[0]]) != "" {
+		title, year, ms = s[:r[0]], atoi(s[r[2]:r[3]]), nil
+	}
 	for i := len(ms) - 1; i >= 0; i-- {
 		y := atoi(s[ms[i][0]:ms[i][1]])
 		if y > maxYear || strings.TrimSpace(s[:ms[i][0]]) == "" {

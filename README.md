@@ -325,7 +325,9 @@ Administrators can download on the **Downloads** page:
 - a **direct `http(s)` link** to a video file.
 
 A finished download is identified like on the command line and moved into
-the library with its `.nfo` and artwork. When MediaKeeper is not sure, the
+the library with its `.nfo` and artwork — into the library folder of its kind,
+or into the one chosen under **Save to** (it can be changed until the
+download is filed). When MediaKeeper is not sure, the
 download is marked **Needs you** and shows the candidates from all
 catalogues; you can also search by another title or paste an IMDb link.
 While a download is still running, **Say what it is…** decides the title in

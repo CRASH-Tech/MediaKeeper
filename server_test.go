@@ -756,3 +756,78 @@ func TestHideSecrets(t *testing.T) {
 		}
 	}
 }
+
+// A series whose episodes are named "s01e01_Title" in "Season_01" folders
+// is one series; a download goes to the library folder chosen for it.
+func TestDownloadSeriesFolderAndRoot(t *testing.T) {
+	s, srv := serverFixture(t)
+	boss := newBrowser(t, srv, "boss")
+	films := t.TempDir()
+	s.auth.SaveSettings(s.config()) // as a start would have saved them
+	if status, body := boss.post("/api/settings", map[string]any{"libraries": []map[string]string{{"path": s.firstRoot()}, {"path": films, "kind": "movies"}}}); status != 200 {
+		t.Fatalf("libraries: %d %s", status, body)
+	}
+	running := func(id string, files ...string) *Download {
+		dl := &Download{ID: id, Source: "magnet:?xt=urn:btih:" + id, Name: id, State: stateOrganizing, dir: filepath.Join(s.dl.dir, id)}
+		for _, f := range files {
+			os.MkdirAll(filepath.Dir(filepath.Join(dl.dir, f)), 0o755)
+			os.WriteFile(filepath.Join(dl.dir, f), []byte("video:"+f), 0o644)
+		}
+		s.dl.mu.Lock()
+		s.dl.list = append(s.dl.list, dl)
+		s.dl.mu.Unlock()
+		return dl
+	}
+	view := func(id string) downloadView {
+		var list []downloadView
+		boss.json("/api/downloads", &list)
+		for _, d := range list {
+			if d.ID == id {
+				return d
+			}
+		}
+		return downloadView{}
+	}
+
+	dir := "Star.Trek.Enterprise.2001-2005.bd.web-dlrip_[teko]/Season_01/"
+	series := running("series", dir+"s01e01_Broken.Bow.Part.1.mkv", dir+"s01e02_Broken.Bow.Part.2.mkv")
+	s.dl.organize(series)
+	if d := view("series"); d.State != stateDone || len(d.Titles) != 1 || d.Titles[0].Kind != "show" {
+		t.Errorf("the series: %+v\n  %s", d, strings.Join(tree(t, s.firstRoot()), "\n  "))
+	}
+
+	var roots []struct{ Path, Kind string }
+	boss.json("/api/downloads/libraries", &roots)
+	if len(roots) != 2 || roots[1].Path != films {
+		t.Fatalf("library folders: %+v", roots)
+	}
+	movie := running("movie", "Iron.Man.2008.BDRip.mkv")
+	s.dl.set(movie, func() { movie.State = stateDownloading })
+	if status, _ := boss.post("/api/downloads/movie/root", map[string]string{"root": "/not/a/library"}); status != 400 {
+		t.Errorf("a folder outside the library accepted")
+	}
+	if status, body := boss.post("/api/downloads/movie/root", map[string]string{"root": films}); status != 200 {
+		t.Fatalf("choosing the folder: %d %s", status, body)
+	}
+	s.dl.set(movie, func() { movie.State = stateOrganizing })
+	s.dl.organize(movie)
+	if !exists(filepath.Join(films, "Железный человек (2008)", "Железный человек (2008).mkv")) {
+		t.Errorf("not in the chosen folder:\n  %s", strings.Join(tree(t, films), "\n  "))
+	}
+	if status, _ := boss.post("/api/downloads", map[string]string{"source": fakeURL + "/files/x.mkv", "root": "/elsewhere"}); status != 400 {
+		t.Errorf("a download into a folder outside the library accepted")
+	}
+}
+
+func TestTargetRoots(t *testing.T) {
+	roots := []Root{{Path: "/a"}, {Path: "/m", Kind: rootMovies}, {Path: "/s", Kind: rootShows}}
+	for chosen, want := range map[string]string{"": "/a /m /s", "/a": "/a", "/m": "/m /a /s", "/s": "/s /a /m"} {
+		var got []string
+		for _, r := range targetRoots(roots, chosen) {
+			got = append(got, r.Path)
+		}
+		if strings.Join(got, " ") != want {
+			t.Errorf("%q: %v", chosen, got)
+		}
+	}
+}

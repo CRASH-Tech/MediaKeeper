@@ -753,7 +753,7 @@ function historyList() {
 //   ask:     with fill, the button for an ID says "Set by ID" (a choice
 //            made in advance, not a form)
 // resolve gets the request body and the candidate picked (none for an ID).
-function identifyForm({ unit, search, resolve, st, extra, fill, ask }) {
+function identifyForm({ unit, search, resolve, st, extra, fill, ask, auto = true }) {
   Object.assign(st, { query: "", picked: null, candidates: null, asMovie: true, season: 1, episode: 1, ref: "", ...st });
   const holder = h("div", {});
   const error = h("p", { class: "error" });
@@ -807,10 +807,16 @@ function identifyForm({ unit, search, resolve, st, extra, fill, ask }) {
     oninput: () => st.query = query.value, onkeydown: e => { if (e.key === "Enter") { e.preventDefault(); find(); } } });
   const ref = h("input", { type: "text", class: "grow", placeholder: "tt0371746, tmdb:1726, kp:61237 or a link to IMDb, TMDB, Kinopoisk, Letterboxd, TVMaze", value: st.ref,
     "aria-label": "ID or link", oninput: () => st.ref = ref.value });
-  if (st.candidates) show(); else find();
+  // Many titles waiting at once are not all searched at once: the first few
+  // are, the others when asked.
+  if (st.candidates) show();
+  else if (auto) find();
+  else holder.replaceChildren(h("p", { class: "dim" }, "Search to see what it could be."));
+  const files = unit.files || [];
   return h("div", { class: "unit" },
     h("div", {}, h("b", {}, { tv: "Series: ", movie: "Movie: " }[unit.kind] || ""), unit.title || "?", unit.year ? ` (${unit.year})` : ""),
-    unit.files && h("div", { class: "files" }, unit.files.join(", ")),
+    files.length > 0 && h("div", { class: "files", title: files.join("\n") },
+      files.length > 3 ? `${files.length} files: ${files.slice(0, 2).join(", ")}, …` : files.join(", ")),
     h("div", { class: "row", style: "margin-top:10px" }, query, h("button", { type: "button", onclick: find }, "Search")),
     holder,
     h("div", { class: "row", style: "margin-top:10px" }, ref,
@@ -1414,6 +1420,20 @@ async function renderDownloads() {
   const file = h("input", { type: "file", accept: ".torrent,application/x-bittorrent", "aria-label": "Torrent file" });
   const error = h("p", { class: "error" });
   const list = h("div", {});
+  // Where downloads are filed: by kind, or a library folder chosen (the
+  // last choice is offered again).
+  let roots = [];
+  try { roots = await api("downloads/libraries"); } catch { /* by kind, then */ }
+  const kindNote = { movies: "movies", shows: "series", "": "movies and series" };
+  const rootName = r => `${r.path} — ${kindNote[r.kind || ""]}`;
+  const rootOptions = chosen => [h("option", { value: "", selected: !chosen }, "By kind: movies to movies, series to series"),
+    roots.map(r => h("option", { value: r.path, selected: r.path === chosen }, rootName(r)))];
+  let lastRoot = "";
+  try { lastRoot = localStorage.getItem("mk_download_root") || ""; } catch { /* private mode */ }
+  if (!roots.some(r => r.path === lastRoot)) lastRoot = "";
+  const target = h("select", { "aria-label": "Library folder", class: "grow", onchange: () => {
+    try { localStorage.setItem("mk_download_root", target.value); } catch { /* private mode */ }
+  } }, rootOptions(lastRoot));
   const open = {}; // unit key -> the state of its form, kept across refreshes
   const presetOpen = {}; // download id -> the "what is it" form is open
   let last = []; // the list as last drawn
@@ -1435,9 +1455,10 @@ async function renderDownloads() {
       if (file.files.length) {
         const form = new FormData();
         form.append("torrent", file.files[0]);
+        form.append("root", target.value);
         result = await api("downloads", { method: "POST", body: form });
       } else if (source.value.trim()) {
-        result = await api("downloads", { json: { source: source.value } });
+        result = await api("downloads", { json: { source: source.value, root: target.value } });
       } else return;
       source.value = ""; file.value = "";
       draw(result, true);
@@ -1479,6 +1500,10 @@ async function renderDownloads() {
         h("a", { class: "thumb", href: `#${t.kind}/${t.id}`, style: t.poster ? `background-image:${image(t.id, "poster")}` : "" }),
         h("a", { class: "grow", href: `#${t.kind}/${t.id}` }, fullTitle(t), t.year ? ` (${t.year})` : ""),
         h("button", { class: "small", onclick: () => fixFiled(t) }, "Wrong? Fix…"))));
+    // Where it goes, changeable until it is filed.
+    const where = roots.length > 1 && ["downloading", "attention"].includes(d.state) && h("div", { class: "row download-root" },
+      h("span", { class: "dim" }, "Save to"),
+      h("select", { "aria-label": "Library folder", onchange: e => alerting("/root", { json: { root: e.target.value } }) }, rootOptions(d.root || "")));
     return h("div", { class: "panel glass download" },
       h("div", { class: "head" },
         h("span", { class: "name" }, d.name),
@@ -1489,11 +1514,12 @@ async function renderDownloads() {
         h("progress", { value: d.done, max: d.total || 1 }),
         h("div", { class: "dim" }, d.total ? `${bytes(d.done)} of ${bytes(d.total)} · ${bytes(d.speed)}/s` : "Connecting…")],
       presetBox,
+      where,
       d.error && h("p", { class: "error" }, d.error),
       titles,
       d.log && h("details", { class: "log-box", open: d.state !== "done" }, h("summary", { class: "dim" }, "What was done"), h("pre", { class: "log" }, d.log)),
-      (d.pending || []).map(u => identifyForm({
-        unit: u, st: open[d.id + "/" + u.key] = open[d.id + "/" + u.key] || {},
+      (d.pending || []).map((u, i) => identifyForm({
+        unit: u, st: open[d.id + "/" + u.key] = open[d.id + "/" + u.key] || {}, auto: i < 3,
         search: q => api(`downloads/${d.id}/search?key=${encodeURIComponent(u.key)}&q=${encodeURIComponent(q)}`),
         resolve: body => act("/resolve", { json: { key: u.key, ...body } }),
         extra: h("button", { type: "button", class: "danger", onclick: () => confirm("Delete these files?") && alerting("/discard", { json: { key: u.key } }) }, "Delete the files"),
@@ -1504,7 +1530,8 @@ async function renderDownloads() {
     h("form", { class: "panel glass form", onsubmit: add },
       h("div", { class: "row" }, source, h("button", { class: "primary" }, "Download")),
       h("div", { class: "row", style: "margin-top:10px" }, h("span", { class: "dim" }, "or a .torrent file:"), file),
-      h("p", { class: "dim", style: "margin-bottom:0" }, "After downloading, the file is identified, renamed and put into Movies or Shows. If the program is not sure, it asks here; while it downloads, you can also say what it is."),
+      roots.length > 1 && h("div", { class: "row", style: "margin-top:10px" }, h("span", { class: "dim" }, "Save to:"), target),
+      h("p", { class: "dim", style: "margin-bottom:0" }, "After downloading, the file is identified, renamed and put into the library. If the program is not sure, it asks here; while it downloads, you can also say what it is."),
       error),
     list);
   const refresh = async () => { try { draw(await api("downloads")); } catch { /* shown on the next tick */ } };

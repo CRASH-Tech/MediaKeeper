@@ -39,6 +39,11 @@ func TestParsePath(t *testing.T) {
 		{"Show.Name.3x07.HDTV.avi", Guess{Title: "Show Name", IsSeries: true, Season: 3, Episodes: []int{7}}},
 		{"Show S01E01E02.mkv", Guess{Title: "Show", IsSeries: true, Season: 1, Episodes: []int{1, 2}}},
 		{"Movie [1920x1080].mkv", Guess{Title: "Movie"}},
+		// The episode first, joined by underscores; the series only in the folder.
+		{"House.M.D.2004-2012.bd.web-dlrip_[teko]/Season_01/s01e03_Occam's.Razor.avi",
+			Guess{Title: "House M D", Year: 2004, IsSeries: true, Season: 1, Episodes: []int{3}}},
+		{"Show_Name_S02E05_Title.mkv", Guess{Title: "Show Name", IsSeries: true, Season: 2, Episodes: []int{5}}},
+		{"Friends (1994-2004)/Season 2/S02E01.mkv", Guess{Title: "Friends", Year: 1994, IsSeries: true, Season: 2, Episodes: []int{1}}},
 	}
 	for _, tt := range tests {
 		if got := ParsePath(filepath.FromSlash(tt.rel)); !reflect.DeepEqual(got, tt.want) {

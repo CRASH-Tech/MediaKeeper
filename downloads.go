@@ -49,6 +49,7 @@ type Download struct {
 	Added  time.Time `json:"added"`
 	Filed  []string  `json:"filed,omitempty"`  // where its videos are in the library now
 	Preset *preset   `json:"preset,omitempty"` // what it is, said before it finished
+	Root   string    `json:"root,omitempty"`   // the library folder chosen for it; "" goes by kind
 
 	dir    string
 	cancel context.CancelFunc
@@ -161,9 +162,13 @@ func (d *Downloads) set(dl *Download, change func()) {
 }
 
 // Add starts a download from a link or a magnet; torrent holds the content
-// of an uploaded .torrent file instead.
-func (d *Downloads) Add(source string, torrent []byte) (*Download, error) {
+// of an uploaded .torrent file instead. root is the library folder to file
+// it in, "" for the one of its kind.
+func (d *Downloads) Add(source string, torrent []byte, root string) (*Download, error) {
 	source = strings.TrimSpace(source)
+	if err := d.checkRoot(root); err != nil {
+		return nil, err
+	}
 	isTorrent := torrent != nil || strings.HasPrefix(strings.ToLower(source), "magnet:")
 	if torrent == nil && !isTorrent {
 		u, err := url.Parse(source)
@@ -180,7 +185,7 @@ func (d *Downloads) Add(source string, torrent []byte) (*Download, error) {
 			return nil, err
 		}
 	}
-	dl := &Download{ID: randomHex(8), Source: source, Name: source, State: stateDownloading, Added: time.Now()}
+	dl := &Download{ID: randomHex(8), Source: source, Name: source, State: stateDownloading, Added: time.Now(), Root: root}
 	if strings.HasPrefix(source, "magnet:") {
 		dl.Name = "magnet link"
 		if m := regexp.MustCompile(`[?&]dn=([^&]+)`).FindStringSubmatch(source); m != nil {
@@ -215,6 +220,35 @@ func (d *Downloads) Add(source string, torrent []byte) (*Download, error) {
 		d.organize(dl)
 	}()
 	return dl, nil
+}
+
+// checkRoot accepts "" or one of the library folders.
+func (d *Downloads) checkRoot(root string) error {
+	if root == "" {
+		return nil
+	}
+	for _, r := range d.s.libRoots() {
+		if r.Path == root {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s is not a library folder", root)
+}
+
+// targetRoots are the library folders a download is filed into: the one
+// chosen for it first — the only one when it holds both movies and series,
+// else titles of the other kind go by kind — or all of them, by kind.
+func targetRoots(roots []Root, chosen string) []Root {
+	for i, r := range roots {
+		if r.Path != chosen {
+			continue
+		}
+		if r.Kind == rootMixed {
+			return []Root{r}
+		}
+		return append([]Root{r}, append(append([]Root(nil), roots[:i]...), roots[i+1:]...)...)
+	}
+	return roots
 }
 
 func (d *Downloads) fail(dl *Download, err error) {
@@ -487,6 +521,9 @@ func (d *Downloads) newApp(dl *Download, out *bytes.Buffer) (*App, error) {
 	if len(roots) == 0 {
 		return nil, errNoLibrary
 	}
+	d.mu.Lock()
+	roots = targetRoots(roots, dl.Root)
+	d.mu.Unlock()
 	a := &App{ui: ui, root: dl.dir, out: roots[0].Path, outSet: true, outRoots: roots, yes: true, noTags: d.s.tagsOff(), noJournal: true}
 	// A new hub every time: a source that was unreachable an hour ago gets
 	// another chance.
@@ -528,6 +565,9 @@ func (d *Downloads) organize(dl *Download) {
 	d.mu.Lock()
 	p := dl.Preset
 	d.mu.Unlock()
+	if p != nil && p.Kind == kindTV && len(units) > 1 {
+		units = oneSeries(units)
+	}
 	if p != nil && len(units) != 1 {
 		fmt.Fprintf(&out, "(%q was said, but the download holds %d titles: each is identified on its own)\n", p.Label, len(units))
 		p = nil
@@ -551,6 +591,26 @@ func (d *Downloads) organize(dl *Download) {
 		}
 	}
 	d.finish(dl, a, plan, &out)
+}
+
+// oneSeries: a download said to be a series is that series, though its
+// episodes guess at the series' name differently ("Show", "Show US", none).
+// Its episodes become one unit; anything that is not an episode stays apart.
+func oneSeries(units []*Unit) []*Unit {
+	var series *Unit
+	var out []*Unit
+	for _, u := range units {
+		switch {
+		case u.Kind != kindTV:
+			out = append(out, u)
+		case series == nil:
+			series = u
+			out = append(out, u)
+		default:
+			series.Files = append(series.Files, u.Files...)
+		}
+	}
+	return out
 }
 
 func (d *Downloads) plan(a *App, plan *Plan, u *Unit, m *Match, out *bytes.Buffer) {
@@ -790,14 +850,22 @@ func (d *Downloads) api(w http.ResponseWriter, r *http.Request, parts []string) 
 		}
 		apiError(w, status, err)
 	}
+	if len(parts) == 1 && parts[0] == "libraries" { // where a download can be filed
+		list := []map[string]string{}
+		for _, r := range d.s.libRoots() {
+			list = append(list, map[string]string{"path": r.Path, "kind": r.Kind})
+		}
+		writeJSON(w, http.StatusOK, list)
+		return
+	}
 	if len(parts) == 0 {
 		switch r.Method {
 		case http.MethodGet:
 			writeJSON(w, http.StatusOK, d.listJSON())
 		case http.MethodPost:
-			source, torrent, err := readDownloadRequest(r)
+			source, torrent, root, err := readDownloadRequest(r)
 			if err == nil {
-				_, err = d.Add(source, torrent)
+				_, err = d.Add(source, torrent, root)
 			}
 			if err != nil {
 				fail(err)
@@ -836,6 +904,11 @@ func (d *Downloads) api(w http.ResponseWriter, r *http.Request, parts []string) 
 	case action == "preset" && r.Method == http.MethodDelete:
 		d.set(dl, func() { dl.Preset = nil })
 		d.save()
+	case action == "root" && r.Method == http.MethodPost:
+		var req struct{ Root string }
+		if err = readJSON(r, &req); err == nil {
+			err = d.setRoot(dl, req.Root)
+		}
 	case action == "resolve" && r.Method == http.MethodPost:
 		var req resolveRequest
 		if err = readJSON(r, &req); err == nil {
@@ -857,26 +930,44 @@ func (d *Downloads) api(w http.ResponseWriter, r *http.Request, parts []string) 
 	writeJSON(w, http.StatusOK, d.listJSON())
 }
 
-// readDownloadRequest accepts JSON {"source": "..."} or a form with a
-// "torrent" file.
-func readDownloadRequest(r *http.Request) (source string, torrent []byte, err error) {
+// setRoot changes the library folder of a download that is not filed yet.
+func (d *Downloads) setRoot(dl *Download, root string) error {
+	if err := d.checkRoot(root); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	state := dl.State
+	if state == stateDownloading || state == stateAttention {
+		dl.Root = root
+	}
+	d.mu.Unlock()
+	if state != stateDownloading && state != stateAttention {
+		return errors.New("this download is filed already")
+	}
+	d.save()
+	return nil
+}
+
+// readDownloadRequest accepts JSON {"source": "...", "root": "..."} or a
+// form with a "torrent" file (and a "root").
+func readDownloadRequest(r *http.Request) (source string, torrent []byte, root string, err error) {
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		file, header, err := r.FormFile("torrent")
 		if err != nil {
-			return "", nil, errors.New("no torrent file in the request")
+			return "", nil, "", errors.New("no torrent file in the request")
 		}
 		defer file.Close()
 		torrent, err = io.ReadAll(io.LimitReader(file, 8<<20))
 		if err != nil || len(torrent) == 0 || torrent[0] != 'd' {
-			return "", nil, errors.New("this is not a torrent file")
+			return "", nil, "", errors.New("this is not a torrent file")
 		}
-		return filepath.Base(header.Filename), torrent, nil
+		return filepath.Base(header.Filename), torrent, r.FormValue("root"), nil
 	}
-	var req struct{ Source string }
+	var req struct{ Source, Root string }
 	if err := readJSON(r, &req); err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
-	return req.Source, nil, nil
+	return req.Source, nil, req.Root, nil
 }
 
 func (d *Downloads) listJSON() []map[string]any {
@@ -896,6 +987,9 @@ func (d *Downloads) listJSON() []map[string]any {
 		}
 		if dl.Preset != nil {
 			m["preset"] = dl.Preset.Label
+		}
+		if dl.Root != "" {
+			m["root"] = dl.Root
 		}
 		if titles := d.titles(dl.Filed); len(titles) > 0 {
 			m["titles"] = titles

@@ -653,3 +653,5 @@ button.icon-button .icon { width: 15px; height: 15px; }
 .new-folder .grow { min-width: 0; }
 .new-folder input { width: 100%; }
 .picker-buttons { margin-top: 12px; }
+.download-root { margin-top: 10px; flex-wrap: nowrap; }
+.download-root select, .form select.grow { min-width: 0; max-width: 100%; }
