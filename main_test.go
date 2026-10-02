@@ -43,12 +43,32 @@ func TestParsePath(t *testing.T) {
 		{"House.M.D.2004-2012.bd.web-dlrip_[teko]/Season_01/s01e03_Occam's.Razor.avi",
 			Guess{Title: "House M D", Year: 2004, IsSeries: true, Season: 1, Episodes: []int{3}}},
 		{"Show_Name_S02E05_Title.mkv", Guess{Title: "Show Name", IsSeries: true, Season: 2, Episodes: []int{5}}},
+		// A season at the end of the series' folder.
+		{"Show.Season.1/01 - Pilot.mkv", Guess{Title: "Show", IsSeries: true, Season: 1, Episodes: []int{1}}},
+		{"Шерлок (Сезон 2)/03.avi", Guess{Title: "Шерлок", IsSeries: true, Season: 2, Episodes: []int{3}}},
+		{"Lost.S03.1080p/03.mkv", Guess{Title: "Lost", IsSeries: true, Season: 3, Episodes: []int{3}}},
 		{"Friends (1994-2004)/Season 2/S02E01.mkv", Guess{Title: "Friends", Year: 1994, IsSeries: true, Season: 2, Episodes: []int{1}}},
 	}
 	for _, tt := range tests {
 		if got := ParsePath(filepath.FromSlash(tt.rel)); !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s:\n got %+v\nwant %+v", tt.rel, got, tt.want)
 		}
+	}
+}
+
+// Known to be episodes, numbered files are episodes of the first season.
+func TestParseEpisode(t *testing.T) {
+	for rel, want := range map[string]Guess{
+		"Шерлок/01. Этюд в розовых тонах.avi": {Title: "Шерлок", IsSeries: true, Season: 1, Episodes: []int{1}},
+		"The.Office.US/Episode 07.mkv":        {Title: "The Office US", IsSeries: true, Season: 1, Episodes: []int{7}},
+		"Show/Серия 12.avi":                   {Title: "Show", IsSeries: true, Season: 1, Episodes: []int{12}},
+	} {
+		if got, ok := ParseEpisode(rel); !ok || !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: %+v", rel, got)
+		}
+	}
+	if _, ok := ParseEpisode("Ocean's Eleven (2001)/Ocean's.Eleven.mkv"); ok {
+		t.Errorf("a name without a number became an episode")
 	}
 }
 

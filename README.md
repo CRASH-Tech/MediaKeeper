@@ -325,14 +325,21 @@ Administrators can download on the **Downloads** page:
 - a **direct `http(s)` link** to a video file.
 
 A finished download is identified like on the command line and moved into
-the library with its `.nfo` and artwork — into the library folder of its kind,
-or into the one chosen under **Save to** (it can be changed until the
-download is filed). When MediaKeeper is not sure, the
-download is marked **Needs you** and shows the candidates from all
-catalogues; you can also search by another title or paste an IMDb link.
+the library with its `.nfo` and artwork. **Save to** decides where: a library
+folder you choose — shown with the free space on its disk — or automatically,
+each title to the first folder of its kind. A chosen folder is used for
+whatever the download turns out to be, so you can send it where there is
+room; it is also downloaded on that folder's disk. The choice can be changed
+until the download is filed. A download of several videos sent to a folder
+of series, or said to be a series, is filed as one series: even files that
+are only numbered (`01.avi`, `Серия 5.mkv`) become its episodes.
+
+When MediaKeeper is not sure, the download is marked **Needs you** and shows
+the candidates from all catalogues; you can also search by another title or
+paste an IMDb link.
 While a download is still running, **Say what it is…** decides the title in
-advance. Downloads in progress are kept in `.incoming` inside the first
-library folder.
+advance. Downloads in progress are kept in `.incoming` inside the chosen
+library folder (the first one when the choice is automatic).
 
 ### Users
 

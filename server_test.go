@@ -821,7 +821,7 @@ func TestDownloadSeriesFolderAndRoot(t *testing.T) {
 
 func TestTargetRoots(t *testing.T) {
 	roots := []Root{{Path: "/a"}, {Path: "/m", Kind: rootMovies}, {Path: "/s", Kind: rootShows}}
-	for chosen, want := range map[string]string{"": "/a /m /s", "/a": "/a", "/m": "/m /a /s", "/s": "/s /a /m"} {
+	for chosen, want := range map[string]string{"": "/a /m /s", "/a": "/a", "/m": "/m", "/s": "/s", "/gone": "/a /m /s"} {
 		var got []string
 		for _, r := range targetRoots(roots, chosen) {
 			got = append(got, r.Path)
@@ -830,4 +830,57 @@ func TestTargetRoots(t *testing.T) {
 			t.Errorf("%q: %v", chosen, got)
 		}
 	}
+}
+
+// A download sent to a folder of series is a series: numbered files are its
+// episodes. A movie sent there — for the room — stays there, as chosen.
+func TestDownloadToShowsFolder(t *testing.T) {
+	s, srv := serverFixture(t)
+	boss := newBrowser(t, srv, "boss")
+	movies, shows := t.TempDir(), t.TempDir()
+	s.auth.SaveSettings(s.config())
+	if status, body := boss.post("/api/settings", map[string]any{"libraries": []map[string]string{{"path": movies, "kind": "movies"}, {"path": shows, "kind": "shows"}}}); status != 200 {
+		t.Fatalf("libraries: %d %s", status, body)
+	}
+	organize := func(id string, files ...string) *Download {
+		dl := &Download{ID: id, Name: id, State: stateOrganizing, Root: shows, dir: filepath.Join(s.dl.folder(), id)}
+		for _, f := range files {
+			os.MkdirAll(filepath.Dir(filepath.Join(dl.dir, f)), 0o755)
+			os.WriteFile(filepath.Join(dl.dir, f), []byte("video:"+f), 0o644)
+		}
+		s.dl.mu.Lock()
+		s.dl.list = append(s.dl.list, dl)
+		s.dl.mu.Unlock()
+		s.dl.organize(dl)
+		return dl
+	}
+	series := organize("numbered", "Star Trek Enterprise/01.mkv", "Star Trek Enterprise/02 - Broken Bow.mkv")
+	season := filepath.Join(shows, "Звёздный путь - Энтерпрайз (2001)", "Season 01")
+	if entries, _ := os.ReadDir(season); series.State != stateDone || len(entries) < 2 {
+		t.Errorf("numbered episodes: %s\n%s\n  %s", series.State, series.Log, strings.Join(tree(t, shows), "\n  "))
+	}
+	movie := organize("movie", "Iron.Man.2008.BDRip.mkv")
+	if !exists(filepath.Join(shows, "Железный человек (2008)", "Железный человек (2008).mkv")) || !strings.Contains(movie.Log, "as chosen") {
+		t.Errorf("a movie sent to the series: %s\n  %s", movie.Log, strings.Join(tree(t, shows), "\n  "))
+	}
+	// The catalogue still knows it for a movie (by its .nfo).
+	var lib libraryView
+	boss.json("/api/library", &lib)
+	if len(lib.Movies) != 1 || lib.Movies[0].Title != "Железный человек" {
+		t.Errorf("movies: %+v", lib.Movies)
+	}
+
+	// Downloaded on the disk of the folder chosen, which has room.
+	var roots []struct {
+		Path string
+		Free int64
+	}
+	boss.json("/api/downloads/libraries", &roots)
+	if len(roots) != 2 || roots[1].Free <= 0 {
+		t.Errorf("library folders: %+v", roots)
+	}
+	if dl, err := s.dl.Add(fakeURL+"/files/Iron.Man.2008.BDRip.mkv", nil, shows); err != nil || filepath.Dir(dl.dir) != filepath.Join(shows, incomingDir) {
+		t.Errorf("downloaded in %v (%v)", dl, err)
+	}
+	waitDownloads(t, boss)
 }

@@ -50,6 +50,7 @@ type Download struct {
 	Filed  []string  `json:"filed,omitempty"`  // where its videos are in the library now
 	Preset *preset   `json:"preset,omitempty"` // what it is, said before it finished
 	Root   string    `json:"root,omitempty"`   // the library folder chosen for it; "" goes by kind
+	Dir    string    `json:"dir,omitempty"`    // where it is downloaded: .incoming on the disk it goes to
 
 	dir    string
 	cancel context.CancelFunc
@@ -115,6 +116,9 @@ func (d *Downloads) load() {
 	}
 	for _, dl := range d.list {
 		dl.dir = filepath.Join(d.dir, dl.ID)
+		if dl.Dir != "" {
+			dl.dir = dl.Dir
+		}
 		if dl.State == stateDownloading || dl.State == stateOrganizing {
 			dl.State, dl.Error = stateError, "interrupted by a restart of the server"
 			os.RemoveAll(dl.dir)
@@ -192,7 +196,13 @@ func (d *Downloads) Add(source string, torrent []byte, root string) (*Download, 
 			dl.Name, _ = url.QueryUnescape(m[1])
 		}
 	}
+	// Downloaded on the disk it is to be filed on: the disk of the first
+	// folder may be full, and a move within a disk is instant.
 	dl.dir = filepath.Join(d.dir, dl.ID)
+	if root != "" {
+		dl.dir = filepath.Join(root, incomingDir, dl.ID)
+		dl.Dir = dl.dir
+	}
 	if err := os.MkdirAll(dl.dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -236,17 +246,13 @@ func (d *Downloads) checkRoot(root string) error {
 }
 
 // targetRoots are the library folders a download is filed into: the one
-// chosen for it first — the only one when it holds both movies and series,
-// else titles of the other kind go by kind — or all of them, by kind.
+// chosen for it, whatever it holds — the administrator knows where there is
+// room — or all of them, each title to the first of its kind.
 func targetRoots(roots []Root, chosen string) []Root {
-	for i, r := range roots {
-		if r.Path != chosen {
-			continue
-		}
-		if r.Kind == rootMixed {
+	for _, r := range roots {
+		if r.Path == chosen {
 			return []Root{r}
 		}
-		return append([]Root{r}, append(append([]Root(nil), roots[:i]...), roots[i+1:]...)...)
 	}
 	return roots
 }
@@ -561,13 +567,10 @@ func (d *Downloads) organize(dl *Download) {
 		return
 	}
 	plan := &Plan{}
-	units := Group(a.files)
+	units := d.group(dl, a.files)
 	d.mu.Lock()
 	p := dl.Preset
 	d.mu.Unlock()
-	if p != nil && p.Kind == kindTV && len(units) > 1 {
-		units = oneSeries(units)
-	}
 	if p != nil && len(units) != 1 {
 		fmt.Fprintf(&out, "(%q was said, but the download holds %d titles: each is identified on its own)\n", p.Label, len(units))
 		p = nil
@@ -587,10 +590,50 @@ func (d *Downloads) organize(dl *Download) {
 			}
 		}
 		if m != nil {
-			d.plan(a, plan, u, m, &out)
+			d.plan(dl, a, plan, u, m, &out)
 		}
 	}
 	d.finish(dl, a, plan, &out)
+}
+
+// seriesOnly tells whether a download is known to be a series: one was named
+// for it, or it goes to a library folder of series only and holds several
+// videos (one alone, sent there for the room, may well be a movie).
+func (d *Downloads) seriesOnly(dl *Download, videos int) bool {
+	d.mu.Lock()
+	p, root := dl.Preset, dl.Root
+	d.mu.Unlock()
+	if p != nil && p.Kind == kindTV {
+		return true
+	}
+	for _, r := range d.s.libRoots() {
+		if r.Path == root {
+			return r.Kind == rootShows && videos > 1
+		}
+	}
+	return false
+}
+
+// group makes the titles of a download — the same way while it waits, so
+// that a title is found again by its key. Known to be a series, its files
+// are episodes even when only numbered ("01.avi", "Серия 5"), and they are
+// one series however their names spell it.
+func (d *Downloads) group(dl *Download, files []*MediaFile) []*Unit {
+	if !d.seriesOnly(dl, len(files)) {
+		return Group(files)
+	}
+	for _, f := range files {
+		if f.Guess.IsSeries {
+			continue
+		}
+		if g, ok := ParseEpisode(f.Rel); ok {
+			if g.Title == "" || norm(g.Title) == "" {
+				g.Title, g.Year = cleanTitle(dl.Name) // a file at the top of the download
+			}
+			f.Guess = g
+		}
+	}
+	return oneSeries(Group(files))
 }
 
 // oneSeries: a download said to be a series is that series, though its
@@ -613,8 +656,21 @@ func oneSeries(units []*Unit) []*Unit {
 	return out
 }
 
-func (d *Downloads) plan(a *App, plan *Plan, u *Unit, m *Match, out *bytes.Buffer) {
+func (d *Downloads) plan(dl *Download, a *App, plan *Plan, u *Unit, m *Match, out *bytes.Buffer) {
 	a.localize(m)
+	// A folder chosen for the download takes only its own kind: say so when
+	// a title has to go elsewhere.
+	d.mu.Lock()
+	chosen := dl.Root
+	d.mu.Unlock()
+	if len(a.outRoots) == 1 && a.outRoots[0].Path == chosen {
+		switch kind := a.outRoots[0].Kind; {
+		case kind == rootShows && m.Show == nil:
+			fmt.Fprintf(out, "(%s is a movie, filed in %s as chosen, though that folder is for series)\n", u.Title, chosen)
+		case kind == rootMovies && m.Show != nil:
+			fmt.Fprintf(out, "(%s is a series, filed in %s as chosen, though that folder is for movies)\n", u.Title, chosen)
+		}
+	}
 	if m.Show != nil {
 		if err := a.AddShow(plan, u, m.Show); err != nil {
 			fmt.Fprintf(out, "✗ %s: %v\n", u.Title, err)
@@ -675,7 +731,7 @@ type pendingUnit struct {
 func (d *Downloads) pending(dl *Download) []pendingUnit {
 	files, _ := Scan(dl.dir)
 	var out []pendingUnit
-	for _, u := range Group(files) {
+	for _, u := range d.group(dl, files) {
 		p := pendingUnit{Key: u.Files[0].Rel, Kind: u.Kind, Title: u.Title, Year: u.Year}
 		for _, f := range u.Files {
 			p.Files = append(p.Files, f.Rel)
@@ -691,7 +747,7 @@ func (d *Downloads) unit(dl *Download, key string, out *bytes.Buffer) (*App, *Un
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, u := range Group(a.files) {
+	for _, u := range d.group(dl, a.files) {
 		if u.Files[0].Rel == key {
 			return a, u, nil
 		}
@@ -818,7 +874,7 @@ func (d *Downloads) resolve(dl *Download, req resolveRequest) error {
 		return err
 	}
 	plan := &Plan{}
-	d.plan(a, plan, u, m, &out)
+	d.plan(dl, a, plan, u, m, &out)
 	d.set(dl, func() { dl.State = stateOrganizing })
 	d.finish(dl, a, plan, &out)
 	return firstFailure(out.String())
@@ -850,10 +906,10 @@ func (d *Downloads) api(w http.ResponseWriter, r *http.Request, parts []string) 
 		}
 		apiError(w, status, err)
 	}
-	if len(parts) == 1 && parts[0] == "libraries" { // where a download can be filed
-		list := []map[string]string{}
+	if len(parts) == 1 && parts[0] == "libraries" { // where a download can be filed, and the room there
+		list := []map[string]any{}
 		for _, r := range d.s.libRoots() {
-			list = append(list, map[string]string{"path": r.Path, "kind": r.Kind})
+			list = append(list, map[string]any{"path": r.Path, "kind": r.Kind, "free": diskFree(r.Path)})
 		}
 		writeJSON(w, http.StatusOK, list)
 		return
@@ -984,12 +1040,18 @@ func (d *Downloads) listJSON() []map[string]any {
 			"done": dl.Done, "speed": dl.Speed, "error": dl.Error, "log": dl.Log, "added": dl.Added.Unix()}
 		if dl.State == stateAttention {
 			m["pending"] = d.pending(&dl)
+			if files, _ := Scan(dl.dir); d.seriesOnly(&dl, len(files)) {
+				m["series"] = true // a file that waits is an episode, not a whole series
+			}
 		}
 		if dl.Preset != nil {
 			m["preset"] = dl.Preset.Label
 		}
 		if dl.Root != "" {
 			m["root"] = dl.Root
+		}
+		if dl.State == stateDownloading {
+			m["free"] = diskFree(dl.dir) // where it is downloaded
 		}
 		if titles := d.titles(dl.Filed); len(titles) > 0 {
 			m["titles"] = titles

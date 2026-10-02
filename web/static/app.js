@@ -1425,8 +1425,8 @@ async function renderDownloads() {
   let roots = [];
   try { roots = await api("downloads/libraries"); } catch { /* by kind, then */ }
   const kindNote = { movies: "movies", shows: "series", "": "movies and series" };
-  const rootName = r => `${r.path} — ${kindNote[r.kind || ""]}`;
-  const rootOptions = chosen => [h("option", { value: "", selected: !chosen }, "By kind: movies to movies, series to series"),
+  const rootName = r => `${r.path} — ${kindNote[r.kind || ""]}${r.free >= 0 ? ` · ${bytes(r.free)} free` : ""}`;
+  const rootOptions = chosen => [h("option", { value: "", selected: !chosen }, "Automatically: each title to a folder of its kind"),
     roots.map(r => h("option", { value: r.path, selected: r.path === chosen }, rootName(r)))];
   let lastRoot = "";
   try { lastRoot = localStorage.getItem("mk_download_root") || ""; } catch { /* private mode */ }
@@ -1512,14 +1512,16 @@ async function renderDownloads() {
           d.state === "downloading" ? "Stop" : "Remove")),
       d.state === "downloading" && [
         h("progress", { value: d.done, max: d.total || 1 }),
-        h("div", { class: "dim" }, d.total ? `${bytes(d.done)} of ${bytes(d.total)} · ${bytes(d.speed)}/s` : "Connecting…")],
+        h("div", { class: "dim" }, d.total ? `${bytes(d.done)} of ${bytes(d.total)} · ${bytes(d.speed)}/s` : "Connecting…"),
+        d.total > 0 && d.free >= 0 && d.total - d.done > d.free &&
+          h("p", { class: "error" }, `Not enough room on its disk: ${bytes(d.total - d.done)} more is needed, ${bytes(d.free)} is free.`)],
       presetBox,
       where,
       d.error && h("p", { class: "error" }, d.error),
       titles,
       d.log && h("details", { class: "log-box", open: d.state !== "done" }, h("summary", { class: "dim" }, "What was done"), h("pre", { class: "log" }, d.log)),
       (d.pending || []).map((u, i) => identifyForm({
-        unit: u, st: open[d.id + "/" + u.key] = open[d.id + "/" + u.key] || {}, auto: i < 3,
+        unit: u, st: open[d.id + "/" + u.key] = open[d.id + "/" + u.key] || (d.series ? { asMovie: false } : {}), auto: i < 3,
         search: q => api(`downloads/${d.id}/search?key=${encodeURIComponent(u.key)}&q=${encodeURIComponent(q)}`),
         resolve: body => act("/resolve", { json: { key: u.key, ...body } }),
         extra: h("button", { type: "button", class: "danger", onclick: () => confirm("Delete these files?") && alerting("/discard", { json: { key: u.key } }) }, "Delete the files"),

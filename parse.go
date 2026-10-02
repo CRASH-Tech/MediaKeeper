@@ -28,6 +28,9 @@ var (
 	reEpLead  = regexp.MustCompile(`^(\d{1,3})(?:$|[ ._-])`)
 
 	reSeasonDir = regexp.MustCompile(`(?i)^(?:season|сезон|s)[ ._-]*(\d{1,2})$|^(\d{1,2})[ ._-]*(?:season|сезон)$`)
+	// A season at the end of a folder named after the series: "Show.Season.1",
+	// "Show S02", "Шерлок (Сезон 3)", "Show 2 сезон" (what follows it is junk).
+	reSeasonIn = regexp.MustCompile(`(?i)[ ._\-(\[](?:(?:season|сезон)[ ._-]*(\d{1,2})|s(\d{2})|(\d{1,2})[ ._-]*(?:season|сезон))(?:$|[ ._\-)\]])`)
 
 	reSquare = regexp.MustCompile(`\[[^\]]*\]`)
 	reParen  = regexp.MustCompile(`\([^)]*\)`)
@@ -40,7 +43,18 @@ var (
 
 // ParsePath guesses what a media file is. rel is the path relative to the
 // scanned root, so that parent directory names can help.
-func ParsePath(rel string) Guess {
+func ParsePath(rel string) Guess { return parseGuess(rel, false) }
+
+// ParseEpisode guesses a file known to be an episode (a download said to be a
+// series): a bare number is then the episode's — "01.avi", "Серия 5",
+// "E07" — of the season its folder names, or of the first. ok is false when
+// the name has no number to take.
+func ParseEpisode(rel string) (g Guess, ok bool) {
+	g = parseGuess(rel, true)
+	return g, g.IsSeries
+}
+
+func parseGuess(rel string, episode bool) Guess {
 	base := filepath.Base(rel)
 	stem := strings.TrimSuffix(base, filepath.Ext(base))
 	var dirs []string
@@ -49,10 +63,20 @@ func ParsePath(rel string) Guess {
 	}
 
 	dirSeason := -1
-	for _, d := range dirs {
+	for i, d := range dirs {
 		if m := reSeasonDir.FindStringSubmatch(strings.TrimSpace(d)); m != nil {
 			dirSeason = atoi(m[1] + m[2])
+		} else if m := reSeasonIn.FindStringSubmatchIndex(d); m != nil {
+			for k := 2; k < len(m); k += 2 {
+				if m[k] >= 0 {
+					dirSeason = atoi(d[m[k]:m[k+1]])
+				}
+			}
+			dirs[i] = d[:m[0]] // the series' name
 		}
+	}
+	if episode && dirSeason < 0 {
+		dirSeason = 1
 	}
 
 	g := Guess{}
