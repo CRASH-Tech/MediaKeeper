@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -52,6 +53,9 @@ type Download struct {
 	Root   string    `json:"root,omitempty"`   // the library folder chosen for it; "" goes by kind
 	Dir    string    `json:"dir,omitempty"`    // where it is downloaded: .incoming on the disk it goes to
 	Moved  int       `json:"-"`                // while it is filed: videos moved into the library
+	Peers  int       `json:"-"`                // a torrent: the peers it is connected to
+	Seeds  int       `json:"-"`                // and how many of them have it all
+	Wait   string    `json:"-"`                // what a torrent is waiting for, before it has its description
 	ToMove int       `json:"-"`                // and how many there are to move
 
 	dir    string
@@ -244,6 +248,8 @@ func (d *Downloads) Add(source string, torrent []byte, root string) (*Download, 
 	d.list = append(d.list, dl)
 	d.mu.Unlock()
 	d.save()
+	d.s.log("download %q added: %s, filed %s", dl.Name, map[bool]string{true: "a torrent", false: "a link"}[isTorrent],
+		map[bool]string{true: "in " + root, false: "by kind"}[root != ""])
 
 	go func() {
 		var err error
@@ -363,6 +369,7 @@ func (d *Downloads) fetchHTTP(ctx context.Context, dl *Download, link string) er
 		return fmt.Errorf("%q is not a video file", name)
 	}
 	d.set(dl, func() { dl.Name, dl.Total = name, max(resp.ContentLength, 0) })
+	d.s.log("download %q: fetching %s from %s", name, bytesText(max(resp.ContentLength, 0)), req.URL.Host)
 
 	f, err := os.Create(filepath.Join(dl.dir, name))
 	if err != nil {
@@ -404,7 +411,12 @@ func (d *Downloads) fetchHTTP(ctx context.Context, dl *Download, link string) er
 
 // aria2 starts the torrent engine on first use.
 func (d *Downloads) aria2() (*aria2, error) {
-	d.ariaOnce.Do(func() { d.aria, d.ariaErr = startAria2(d.dir) })
+	d.ariaOnce.Do(func() {
+		d.aria, d.ariaErr = startAria2(d.dir, func(line string) { d.s.log("aria2: %s", line) })
+		if d.ariaErr == nil {
+			d.s.log("aria2 started for torrents and magnet links")
+		}
+	})
 	return d.aria, d.ariaErr
 }
 
@@ -425,10 +437,13 @@ func (d *Downloads) fetchTorrent(ctx context.Context, dl *Download, source strin
 	if err != nil {
 		return err
 	}
+	d.s.log("download %q: given to aria2 (gid %s), into %s", dl.Name, gid, dl.dir)
+	started, lastLog, described := time.Now(), time.Now(), false
 	for {
 		select {
 		case <-ctx.Done():
 			aria.call(nil, "aria2.forceRemove", gid)
+			d.s.log("download %q: stopped", dl.Name)
 			return ctx.Err()
 		case <-time.After(time.Second):
 		}
@@ -437,37 +452,91 @@ func (d *Downloads) fetchTorrent(ctx context.Context, dl *Download, source strin
 			TotalLength     string   `json:"totalLength"`
 			CompletedLength string   `json:"completedLength"`
 			DownloadSpeed   string   `json:"downloadSpeed"`
+			Connections     string   `json:"connections"`
+			NumSeeders      string   `json:"numSeeders"`
 			ErrorMessage    string   `json:"errorMessage"`
 			FollowedBy      []string `json:"followedBy"`
-			Bittorrent      struct {
+			Files           []struct {
+				Path string `json:"path"`
+			} `json:"files"`
+			Bittorrent struct {
 				Info struct {
 					Name string `json:"name"`
 				} `json:"info"`
 			} `json:"bittorrent"`
 		}
 		if err := aria.call(&st, "aria2.tellStatus", gid); err != nil {
+			d.s.log("download %q: aria2 does not answer: %v", dl.Name, err)
 			return err
 		}
 		// A magnet or a link to a .torrent first fetches the description of
 		// the torrent, then the real download follows under a new id.
 		if st.Status == "complete" && len(st.FollowedBy) > 0 {
+			d.s.log("download %q: the torrent's description is fetched (after %s); the files follow (gid %s)", dl.Name, since(started), st.FollowedBy[0])
 			gid = st.FollowedBy[0]
 			continue
 		}
+		total, done, peers, seeds := int64(atoi(st.TotalLength)), int64(atoi(st.CompletedLength)), atoi(st.Connections), atoi(st.NumSeeders)
+		metadata := st.Bittorrent.Info.Name == "" || strings.HasPrefix(st.Bittorrent.Info.Name, "[METADATA]")
+		if !metadata && !described {
+			described = true
+			d.s.log("download %q: torrent %q, %d file(s), %s", dl.Name, st.Bittorrent.Info.Name, len(st.Files), bytesText(total))
+		}
 		d.set(dl, func() {
-			if len(st.FollowedBy) == 0 && st.Bittorrent.Info.Name != "" && !strings.HasPrefix(st.Bittorrent.Info.Name, "[METADATA]") {
+			if len(st.FollowedBy) == 0 && !metadata {
 				dl.Name = st.Bittorrent.Info.Name
-				dl.Total, dl.Done = int64(atoi(st.TotalLength)), int64(atoi(st.CompletedLength))
+				dl.Total, dl.Done = total, done
 			}
-			dl.Speed = int64(atoi(st.DownloadSpeed))
+			dl.Speed, dl.Peers, dl.Seeds = int64(atoi(st.DownloadSpeed)), peers, seeds
+			dl.Wait = ""
+			if metadata {
+				dl.Wait = "the torrent's description"
+			}
 		})
+		if time.Since(lastLog) >= time.Minute {
+			lastLog = time.Now()
+			if metadata {
+				d.s.log("download %q: still fetching the torrent's description after %s · %d peer(s)", dl.Name, since(started), peers)
+			} else {
+				d.s.log("download %q: %s of %s (%d%%) · %s/s · %d peer(s), %d seeder(s)", dl.Name, bytesText(done), bytesText(total),
+					done*100/max(total, 1), bytesText(int64(atoi(st.DownloadSpeed))), peers, seeds)
+			}
+		}
 		switch st.Status {
 		case "complete":
+			d.s.log("download %q: downloaded, %s in %s", dl.Name, bytesText(total), since(started))
 			return nil
 		case "error", "removed":
-			return errors.New(firstNonEmpty(st.ErrorMessage, "the download was stopped"))
+			msg := firstNonEmpty(st.ErrorMessage, "the download was stopped")
+			d.s.log("download %q: aria2 gave up: %s", dl.Name, msg)
+			return errors.New(msg)
 		}
 	}
+}
+
+// matchName is a catalogue entry for the log.
+func matchName(m *Match) string {
+	if m.Show != nil {
+		return fmt.Sprintf("the series %s (%d, %s %s)", m.Show.Title, m.Show.Year, m.Show.Source, m.Show.ID)
+	}
+	return fmt.Sprintf("the movie %s (%d, %s %s)", m.Movie.Title, m.Movie.Year, m.Movie.Source, m.Movie.ID)
+}
+
+// since is a duration for the log: "3m20s".
+func since(t time.Time) string { return time.Since(t).Round(time.Second).String() }
+
+// bytesText is a size for the log: "1.4 GB".
+func bytesText(n int64) string {
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	f, i := float64(n), 0
+	for f >= 1024 && i < len(units)-1 {
+		f /= 1024
+		i++
+	}
+	if i == 0 {
+		return fmt.Sprintf("%d B", n)
+	}
+	return fmt.Sprintf("%.1f %s", f, units[i])
 }
 
 // aria2 is the external program that speaks BitTorrent, driven over its
@@ -478,7 +547,7 @@ type aria2 struct {
 	secret string
 }
 
-func startAria2(dir string) (*aria2, error) {
+func startAria2(dir string, log func(string)) (*aria2, error) {
 	tool, err := exec.LookPath("aria2c")
 	if err != nil {
 		return nil, errors.New("aria2c is not installed on the server: torrents and magnet links cannot be downloaded")
@@ -496,11 +565,35 @@ func startAria2(dir string) (*aria2, error) {
 	a.cmd = exec.Command(tool, "--enable-rpc", "--rpc-listen-all=false", fmt.Sprintf("--rpc-listen-port=%d", port),
 		"--rpc-secret="+a.secret, "--dir="+dir, "--seed-time=0", "--follow-torrent=mem", "--bt-save-metadata=false",
 		"--file-allocation=none", "--allow-overwrite=true", "--max-concurrent-downloads=4",
-		"--summary-interval=0", "--console-log-level=warn", "--quiet=true",
+		"--summary-interval=0", "--console-log-level=warn", "--enable-color=false",
+		"--show-console-readout=false", "--download-result=hide",
+		// The peers it knows outlive a restart, also where its home folder
+		// is not writable (Docker): magnets find peers sooner.
+		"--dht-file-path="+filepath.Join(dir, "dht.dat"), "--dht-file-path6="+filepath.Join(dir, "dht6.dat"),
 		fmt.Sprintf("--stop-with-process=%d", os.Getpid()))
+	// Its warnings and errors (a tracker refusing, a disk full) go to the
+	// server's log.
+	out, err := a.cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	a.cmd.Stderr = a.cmd.Stdout
 	if err := a.cmd.Start(); err != nil {
 		return nil, err
 	}
+	go func() {
+		lines := bufio.NewScanner(out)
+		for lines.Scan() {
+			line := strings.TrimSpace(lines.Text())
+			// Not worth a word: no peers table yet on the first start, and a
+			// removed download's files gone before aria2 let go of them.
+			if line == "" || strings.Contains(line, "DHT routing table") || strings.Contains(line, ".aria2") ||
+				strings.HasSuffix(line, "Exception caught") {
+				continue
+			}
+			log(line)
+		}
+	}()
 	for i := 0; i < 50; i++ {
 		time.Sleep(100 * time.Millisecond)
 		if a.call(nil, "aria2.getVersion") == nil {
@@ -563,7 +656,12 @@ func (d *Downloads) newApp(dl *Download, out *bytes.Buffer) (*App, error) {
 	roots = targetRoots(roots, dl.Root)
 	d.mu.Unlock()
 	a := &App{ui: ui, root: dl.dir, out: roots[0].Path, outSet: true, outRoots: roots, yes: true, noTags: d.s.tagsOff(), noJournal: true,
-		moved: func(done, total int) { d.set(dl, func() { dl.Moved, dl.ToMove = done, total }) }}
+		moved: func(done, total int) {
+			d.set(dl, func() { dl.Moved, dl.ToMove = done, total })
+			if done == total || done%10 == 0 {
+				d.s.log("download %q: %d of %d file(s) moved into the library", dl.Name, done, total)
+			}
+		}}
 	// A new hub every time: a source that was unreachable an hour ago gets
 	// another chance.
 	a.hub = d.hub(providers, ui)
@@ -601,6 +699,7 @@ func (d *Downloads) organize(dl *Download) {
 	}
 	plan := &Plan{}
 	units := d.group(dl, a.files)
+	d.s.log("download %q: organizing %d video file(s) as %d title(s)", dl.Name, len(a.files), len(units))
 	d.mu.Lock()
 	p := dl.Preset
 	d.mu.Unlock()
@@ -814,6 +913,11 @@ func (d *Downloads) finish(dl *Download, a *App, plan *Plan, out *bytes.Buffer) 
 	}
 	left, _ := Scan(dl.dir)
 	log := strings.TrimSpace(out.String())
+	for _, line := range strings.Split(log, "\n") { // what the organizer said, also in the server's log
+		if line = strings.TrimSpace(line); line != "" && (strings.HasPrefix(line, "✓") || strings.HasPrefix(line, "✗") || strings.HasPrefix(line, "(")) {
+			d.s.log("download %q: %s", dl.Name, line)
+		}
+	}
 	if len(left) == 0 {
 		os.RemoveAll(dl.dir)
 		d.set(dl, func() { dl.State, dl.Log = stateDone, log })
@@ -980,6 +1084,7 @@ func (d *Downloads) resolve(dl *Download, req resolveRequest) error {
 		done()
 		return err
 	}
+	d.s.log("download %q: %s chosen for %q, filing it", dl.Name, matchName(m), u.Title)
 	// Filing may take long — files copied to another disk — so it goes on
 	// in the background, and the page shows its progress.
 	d.set(dl, func() { dl.State, dl.Moved, dl.ToMove = stateOrganizing, 0, 0 })
@@ -1165,6 +1270,10 @@ func (d *Downloads) listJSON() []map[string]any {
 		}
 		if dl.State == stateDownloading {
 			m["free"] = diskFree(dl.dir) // where it is downloaded
+			m["peers"], m["seeds"] = dl.Peers, dl.Seeds
+			if dl.Wait != "" {
+				m["wait"] = dl.Wait
+			}
 		}
 		if dl.State == stateOrganizing && dl.ToMove > 0 {
 			m["moved"], m["toMove"] = dl.Moved, dl.ToMove

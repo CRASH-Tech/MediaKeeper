@@ -1077,10 +1077,14 @@ function openEdit(x, opts = {}) {
   let artNote = "From the catalogue entry the description comes from" + (movie ? "." : "; episode stills are only added where there are none.");
   function imagesTab() {
     // card is one picture: what it is now, and a field to replace it.
+    // The browser's own file field does not fit a narrow card: a button
+    // (or a click on the picture) opens it instead.
     const card = (part, cls, label, note, src, has) => {
-      const preview = h("div", { class: "art " + cls, style: has ? `background-image:url("${src}?t=${Date.now()}")` : "" });
-      const input = h("input", { type: "file", accept: "image/jpeg,image/png", "aria-label": label, onchange: () => upload(input, `${x.id}/${part}`, preview, src) });
-      return h("div", { class: "art-card" }, preview, h("b", {}, label), note && h("span", { class: "dim" }, note), input);
+      const input = h("input", { type: "file", accept: "image/jpeg,image/png", class: "hidden", "aria-label": label, onchange: () => upload(input, `${x.id}/${part}`, preview, src) });
+      const pick = () => input.click();
+      const preview = h("div", { class: "art pickable " + cls, title: "Choose a picture", onclick: pick, style: has ? `background-image:url("${src}?t=${Date.now()}")` : "" });
+      return h("div", { class: "art-card" }, preview, h("b", {}, label), note && h("span", { class: "dim" }, note),
+        h("button", { type: "button", class: "small", onclick: pick }, "Upload…"), input);
     };
     const main = h("div", { class: "art-cards" },
       card("poster", "poster", "Poster", "A tall picture, JPEG or PNG.", `/api/image/${x.id}/poster`, x.poster),
@@ -1562,7 +1566,8 @@ async function renderDownloads() {
           : "Identifying and preparing the files…")],
       d.state === "downloading" && [
         h("progress", { value: d.done, max: d.total || 1 }),
-        h("div", { class: "dim" }, d.total ? `${bytes(d.done)} of ${bytes(d.total)} · ${bytes(d.speed)}/s` : "Connecting…"),
+        h("div", { class: "dim" }, d.wait ? `Fetching ${d.wait} · ${d.peers} peer(s)${d.peers ? "" : " — nobody found yet who shares it"}`
+          : d.total ? `${bytes(d.done)} of ${bytes(d.total)} · ${bytes(d.speed)}/s · ${d.peers} peer(s), ${d.seeds} seeder(s)` : "Connecting…"),
         d.total > 0 && d.free >= 0 && d.total - d.done > d.free &&
           h("p", { class: "error" }, `Not enough room on its disk: ${bytes(d.total - d.done)} more is needed, ${bytes(d.free)} is free.`)],
       presetBox,
